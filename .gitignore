@@ -1,0 +1,32 @@
+.env
+*.env
+!.env.example
+
+# --- Recorded LLM traffic (cassettes). Headers are stripped at write time,
+#     but these are never committed regardless. ---
+fixtures/
+
+# --- Run outputs ---
+results/
+logs/
+replay/out/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# --- Local agent/session tooling config (not project content) ---
+.claude/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
