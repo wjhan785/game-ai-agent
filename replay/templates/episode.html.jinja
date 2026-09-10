@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Replay — {{ meta.scenario_id }} seed {{ meta.seed }}</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-alt: #1e222b;
+    --border: #2a2f3a;
+    --text: #e6e8ec;
+    --muted: #8a8f9c;
+    --party: #4fa8ff;
+    --enemy: #ff6b6b;
+    --hp: #3ecf6b;
+    --hp-low: #e0a83e;
+    --hp-crit: #e05555;
+    --energy: #7c8bff;
+    --warn: #e0a83e;
+    --bad: #e05555;
+    --good: #3ecf6b;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+  header.page { padding: 20px 28px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header.page h1 { margin: 0 0 6px; font-size: 20px; font-weight: 600; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 12px; background: var(--panel-alt); border: 1px solid var(--border); color: var(--muted); }
+  .badge.defect { background: rgba(224,85,85,0.15); border-color: rgba(224,85,85,0.4); color: #ff9a9a; }
+  .badge.outcome-party_win { background: rgba(62,207,107,0.15); border-color: rgba(62,207,107,0.4); color: #7be09a; }
+  .badge.outcome-enemy_win { background: rgba(224,85,85,0.15); border-color: rgba(224,85,85,0.4); color: #ff9a9a; }
+  .badge.outcome-turn_cap { background: rgba(224,168,62,0.15); border-color: rgba(224,168,62,0.4); color: #f0c674; }
+
+  main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 80px; }
+
+  section.roster { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 28px; }
+  .char-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .char-card.team-party { border-left: 3px solid var(--party); }
+  .char-card.team-enemy { border-left: 3px solid var(--enemy); }
+  .char-card h3 { margin: 0 0 4px; font-size: 14px; }
+  .char-card .sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .ability-line { font-size: 12px; color: var(--muted); padding: 2px 0; border-top: 1px dashed var(--border); }
+  .ability-line:first-of-type { border-top: none; }
+  .ability-name { color: var(--text); }
+
+  h2.section-title { font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin: 28px 0 12px; }
+
+  .controls { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; font-size: 13px; color: var(--muted); }
+  .controls label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+
+  .turn { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  .turn.has-violation { border-color: rgba(224,85,85,0.6); }
+  .turn-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; user-select: none; }
+  .turn-head:hover { background: var(--panel-alt); }
+  .turn-head .idx { color: var(--muted); font-variant-numeric: tabular-nums; width: 46px; }
+  .turn-head .actor { font-weight: 600; }
+  .turn-head .summary { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turn-head .chev { color: var(--muted); transition: transform 0.15s; }
+  .turn.open .chev { transform: rotate(90deg); }
+  .turn-body { display: none; padding: 0 14px 14px; border-top: 1px solid var(--border); }
+  .turn.open .turn-body { display: block; }
+
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 10px; font-size: 13px; margin: 10px 0; }
+  .kv .k { color: var(--muted); }
+
+  .reasoning { font-style: italic; color: var(--muted); font-size: 13px; padding: 8px 10px; margin: 10px 0; background: var(--panel-alt); border-left: 2px solid var(--party); border-radius: 4px; }
+
+  .violations { background: rgba(224,85,85,0.1); border: 1px solid rgba(224,85,85,0.4); border-radius: 6px; padding: 8px 10px; margin: 10px 0; font-size: 12px; color: #ff9a9a; }
+  .violations div { padding: 2px 0; }
+
+  table.roster-after { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
+  table.roster-after th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  table.roster-after td { padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  table.roster-after tr.dead td { opacity: 0.45; }
+  .bar-wrap { width: 90px; height: 6px; background: var(--panel-alt); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
+  .bar { height: 100%; border-radius: 3px; }
+  .bar.hp { background: var(--hp); }
+  .bar.hp.low { background: var(--hp-low); }
+  .bar.hp.crit { background: var(--hp-crit); }
+  .bar.energy { background: var(--energy); }
+  .status-chip { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--panel-alt); border: 1px solid var(--border); margin: 1px 2px; color: var(--muted); }
+
+  .skip-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--panel-alt); color: var(--muted); border: 1px solid var(--border); }
+  footer.page { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+</style>
+</head>
+<body>
+
+<header class="page">
+  <h1>{{ meta.scenario_id }} · seed {{ meta.seed }}{% if meta.method %} · {{ meta.method }}{% endif %}</h1>
+  <div class="meta-row">
+    <span class="badge outcome-{{ meta.outcome }}">outcome: {{ meta.outcome or "in progress" }}</span>
+    <span class="badge">{{ meta.total_turns }} turn-slots</span>
+    <span class="badge">turn cap {{ meta.turn_cap }}</span>
+    {% if meta.defects_enabled %}
+      {% for d in meta.defects_enabled %}
+        <span class="badge defect">{{ d }}</span>
+      {% endfor %}
+    {% else %}
+      <span class="badge">clean (no defects)</span>
+    {% endif %}
+  </div>
+</header>
+
+<main>
+  <h2 class="section-title">Roster</h2>
+  <section class="roster">
+    {% for c in roster %}
+    <div class="char-card team-{{ c.team }}">
+      <h3>{{ c.name }}</h3>
+      <div class="sub">{{ c.team }} · {{ c.element }} · {{ c.max_hp }} HP · {{ c.max_energy }} EN</div>
+      {% for a in c.abilities %}
+      <div class="ability-line">
+        <span class="ability-name">{{ a.name }}</span>
+        — {{ a.element }}, {{ a.energy_cost }} EN, cd {{ a.cooldown }}, power {{ a.base_power }}
+        {%- if a.applies %}, applies {{ a.applies.status_type }} {{ a.applies.magnitude }}×{{ a.applies.duration }}{% endif -%}
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </section>
+
+  <h2 class="section-title">Turn-by-turn</h2>
+  <div class="controls">
+    <label><input type="checkbox" id="expand-all"> expand all</label>
+    <label><input type="checkbox" id="only-actions"> only turns with an action</label>
+    <label><input type="checkbox" id="only-violations"> only turns with invariant violations</label>
+  </div>
+
+  <div id="turns">
+  {% for t in turns %}
+    <div class="turn{% if t.invariant_violations %} has-violation{% endif %}"
+         data-has-action="{{ 'true' if t.action else 'false' }}"
+         data-has-violation="{{ 'true' if t.invariant_violations else 'false' }}">
+      <div class="turn-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="idx">#{{ t.index }}</span>
+        <span class="actor">{{ t.actor_name }}</span>
+        <span class="summary">
+          {% if t.skipped_reason %}
+            skipped ({{ t.skipped_reason }})
+          {% elif t.action %}
+            used {{ t.action.ability_name }}{% if t.action.target_name %} → {{ t.action.target_name }}{% endif %}
+          {% else %}
+            —
+          {% endif %}
+          {% if t.invariant_violations %} · {{ t.invariant_violations|length }} violation(s){% endif %}
+        </span>
+        <span class="chev">▶</span>
+      </div>
+      <div class="turn-body">
+        <div class="kv">
+          <div class="k">round</div><div>{{ t.round_number }}</div>
+          {% if t.skipped_reason %}
+          <div class="k">status</div><div><span class="skip-badge">{{ t.skipped_reason }}</span></div>
+          {% endif %}
+          {% if t.action %}
+          <div class="k">action</div>
+          <div>{{ t.action.ability_name }}{% if t.action.target_name %} → {{ t.action.target_name }}{% endif %}</div>
+          {% endif %}
+          {% if t.ability_effect %}
+            {% if t.ability_effect.per_target_damage %}
+            <div class="k">damage</div>
+            <div>
+              {% for tid, dmg in t.ability_effect.per_target_damage.items() %}
+                {{ tid }}: {{ "%.1f"|format(dmg) }}{% if t.ability_effect.per_target_shield_absorbed.get(tid) %} (shield absorbed {{ "%.1f"|format(t.ability_effect.per_target_shield_absorbed[tid]) }}){% endif %}{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% if t.ability_effect.applied_status %}
+            <div class="k">applied</div><div>{{ t.ability_effect.applied_status }}</div>
+            {% endif %}
+            {% if t.ability_effect.revived %}
+            <div class="k">revived</div><div>{{ t.ability_effect.revived|join(", ") }}</div>
+            {% endif %}
+          {% endif %}
+          {% if t.dot_hot_damage %}
+          <div class="k">dot / hot</div>
+          <div>
+            {% for cid, parts in t.dot_hot_damage.items() %}
+              {{ cid }}: {% for kind, val in parts.items() %}{% if val %}{{ kind }} {{ "%.1f"|format(val) }} {% endif %}{% endfor %}
+            {% endfor %}
+          </div>
+          {% endif %}
+          {% if t.energy_regen_delta %}
+          <div class="k">energy regen</div>
+          <div>
+            {% for cid, val in t.energy_regen_delta.items() %}{{ cid }}: {{ "%+.1f"|format(val) }} {% endfor %}
+          </div>
+          {% endif %}
+          {% if t.deaths %}
+          <div class="k">deaths</div><div>{{ t.deaths|join(", ") }}</div>
+          {% endif %}
+        </div>
+
+        {% if t.agent_reasoning %}
+        <div class="reasoning">"{{ t.agent_reasoning }}"</div>
+        {% endif %}
+
+        {% if t.invariant_violations %}
+        <div class="violations">
+          {% for v in t.invariant_violations %}<div>⚠ {{ v }}</div>{% endfor %}
+        </div>
+        {% endif %}
+
+        <table class="roster-after">
+          <thead>
+            <tr><th>character</th><th>hp</th><th>energy</th><th>statuses</th><th>cooldowns</th></tr>
+          </thead>
+          <tbody>
+            {% for s in t.after %}
+            <tr class="{{ 'dead' if not s.alive }}">
+              <td>{{ s.name }}</td>
+              <td>
+                <span class="bar-wrap"><span class="bar hp{% if s.hp_pct <= 25 %} crit{% elif s.hp_pct <= 50 %} low{% endif %}" style="width:{{ s.hp_pct }}%"></span></span>
+                {{ "%.0f"|format(s.hp) }}/{{ "%.0f"|format(s.max_hp) }}
+              </td>
+              <td>
+                <span class="bar-wrap"><span class="bar energy" style="width:{{ s.energy_pct }}%"></span></span>
+                {{ "%.0f"|format(s.energy) }}/{{ "%.0f"|format(s.max_energy) }}
+              </td>
+              <td>
+                {% for st in s.statuses %}
+                <span class="status-chip">{{ st.status_type }} {{ "%.1f"|format(st.magnitude) }}×{{ st.turns_remaining }}</span>
+                {% endfor %}
+              </td>
+              <td>
+                {% for name, turns_left in s.cooldowns.items() %}
+                <span class="status-chip">{{ name }} {{ turns_left }}</span>
+                {% endfor %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</main>
+
+<footer class="page">generated by replay/generate.py — {{ meta.total_turns }} turn-slots, {{ meta.step_count }} steps</footer>
+
+<script>
+  document.getElementById("expand-all").addEventListener("change", (e) => {
+    document.querySelectorAll(".turn").forEach((t) => t.classList.toggle("open", e.target.checked));
+  });
+  function applyFilters() {
+    const onlyActions = document.getElementById("only-actions").checked;
+    const onlyViolations = document.getElementById("only-violations").checked;
+    document.querySelectorAll(".turn").forEach((t) => {
+      const hasAction = t.dataset.hasAction === "true";
+      const hasViolation = t.dataset.hasViolation === "true";
+      let show = true;
+      if (onlyActions && !hasAction) show = false;
+      if (onlyViolations && !hasViolation) show = false;
+      t.style.display = show ? "" : "none";
+    });
+  }
+  document.getElementById("only-actions").addEventListener("change", applyFilters);
+  document.getElementById("only-violations").addEventListener("change", applyFilters);
+</script>
+</body>
+</html>
