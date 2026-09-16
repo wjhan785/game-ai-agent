@@ -135,3 +135,5 @@ test suite itself, not by manual review:
 - R4 -- full evaluation sweep across all four methods, metrics,
   charts.
 - R5 -- write-up, video, stretch goals or buffer.
+
+Developed with assistance from Claude Code. 
