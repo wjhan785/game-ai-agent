@@ -18,8 +18,7 @@ should ignore damage-over-time, two stacking effects combined the wrong
 way, a percentage effect computed against the wrong base. An LLM agent
 that plans what to try next, remembers what it's already tried, and calls
 tools instead of parsing raw JSON is a natural fit for finding exactly
-that kind of bug -- and the project only means something if it's measured
-honestly against what a much simpler script would already find.
+that kind of bug.
 
 ## Setup
 
@@ -123,11 +122,6 @@ test suite itself, not by manual review:
    gated on the target still being alive -- caught by a 300-battle random
    regression sweep in clean mode showing invariant violations that
    should have been impossible.
-
-Both are exactly the kind of thing the project's own thesis says an
-automated invariant checker is for. Left in this README rather than
-quietly fixed and forgotten, because it's a fair example of the
-process working as intended before any LLM was involved.
 
 ## Roadmap
 
