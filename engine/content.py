@@ -207,10 +207,16 @@ def make_character(
     abilities: list[Ability],
     starting_energy: float | None = None,
     strip_basic_attack: bool = False,
+    speed: float = 100.0,
 ) -> Character:
     """Builds one Character instance. `strip_basic_attack` implements
     defect B08's content-side half -- the engine-side half is that no
-    OTHER code path grants a fallback when this is missing."""
+    OTHER code path grants a fallback when this is missing.
+
+    `speed` must come from the palette documented on engine.models'
+    BASE_ACTION_VALUE (default 100 -- the reference speed) so that
+    BASE_ACTION_VALUE / speed stays exactly representable in float64;
+    see build_battle_state for how it becomes an initial action_value."""
     kit = list(abilities)
     if not strip_basic_attack:
         kit = [basic_attack(element=element)] + kit
@@ -225,4 +231,5 @@ def make_character(
         energy=starting_energy if starting_energy is not None else max_energy,
         energy_regen=energy_regen,
         abilities=kit,
+        speed=speed,
     )

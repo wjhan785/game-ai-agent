@@ -2,18 +2,36 @@
 engine running a different DefectFlags configuration, and report the
 first point where the trajectories disagree.
 
-Why step index is a safe alignment key: `turn_order` is fixed at battle
-construction (engine.scenarios) and `BattleEngine._advance_to_decision`
-advances `turn_pointer`/`round_number`/`step_count` for EVERY turn-slot,
-whether or not a decision was needed -- so the sequence of
-`current_actor_id()` at step i is identical across any two DefectFlags
-configurations for a given (scenario_id, seed), up to and including the
-first step where the two runs actually disagree. That means comparing
-`TurnRecord` logs positionally (index i in one log vs index i in the
-other) is valid up to the first divergence -- which is exactly the point
-this module exists to find. Nothing here needs to re-derive alignment
-past that point; once a divergence is found, replay stops being
-trustworthy and the caller has its answer.
+Why step index is a safe alignment key: turn order is now speed-driven
+(BattleState.current_actor_id picks the character with the lowest
+action_value, tie-broken by turn_order), not a fixed cycle -- so the
+argument for positional alignment can no longer rest on the schedule
+being the same list every time. It rests on this instead: action_value is
+part of `CharacterSnapshot`, and `_diff_records` below compares full
+`after` snapshots -- so "the two runs agree at every step up to i" is a
+claim about a superset of everything the scheduler reads (every
+character's hp/energy/alive/statuses/cooldowns/action_value). Identical
+snapshots at step i-1 therefore imply an identical `current_actor_id()`
+selection at step i, by construction, not by assumption -- and
+`_diff_records` checks `actor_id` FIRST, precisely because a scheduling
+difference is real evidence on its own, before any state difference
+explains it. `BattleEngine._advance_to_decision` still advances
+`elapsed_av`/`round_number`/`step_count` for EVERY turn-slot, whether or
+not a decision was needed, so that sequence is identical across any two
+DefectFlags configurations up to and including the first step where the
+runs actually disagree. That is what makes comparing `TurnRecord` logs
+positionally (index i in one log vs index i in the other) valid up to
+the first divergence -- which is exactly the point this module exists to
+find. Nothing here needs to re-derive alignment past that point; once a
+divergence is found, replay stops being trustworthy and the caller has
+its answer.
+
+One rule this depends on: no defect flag may change a character's speed.
+`scenarios.build_battle_state` reads defects only to decide the abilities
+on a character's kit (B08) and the tie-break order itself (B11) -- never
+speed -- so "same scenario + seed => same schedule" stays true regardless
+of which defects are on, and a schedule difference is always attributable
+to the run, never to an accident of construction.
 
 `replay()` drives a fresh BattleEngine by feeding it the ORIGINAL run's
 recorded actions in order, one per decision point the candidate engine
@@ -124,6 +142,14 @@ def _diff_snapshot(
         parts.append(f"alive {o.alive} != {c.alive}")
     if o.cooldowns != c.cooldowns:
         parts.append(f"cooldowns {o.cooldowns} != {c.cooldowns}")
+    if abs(o.action_value - c.action_value) > FLOAT_TOL:
+        # In practice this never fires as the FIRST divergence: any real
+        # difference in a character's scheduling already shows up one step
+        # earlier as an actor_id mismatch (_diff_records checks that
+        # first). It is here so the module docstring's claim -- that the
+        # diffed snapshot is a superset of everything the scheduler reads
+        # -- is actually true, not just asserted.
+        parts.append(f"action_value {o.action_value} != {c.action_value}")
 
     o_statuses = sorted(
         (s.status_type.value, round(s.magnitude, 6), s.turns_remaining, s.source_id)

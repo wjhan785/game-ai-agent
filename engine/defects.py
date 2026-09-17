@@ -1,15 +1,16 @@
-"""The ten seeded defects, as switches -- not baked in.
+"""The eleven seeded defects, as switches -- not baked in.
 
 Every defect is a boolean flag, defaulting to False (clean/correct
-behavior). Each flag guards exactly one branch in effects.py, rules.py, or
-resolution.py; grep the flag name to find its branch. This is what lets
-golden tests assert correct semantics against clean mode, lets the oracle
-attribute a divergence to a single flag by ablation, and lets ANSWER_KEY.md
-be generated from this file (via scripts/generate_answer_key.py) instead
-of drifting from it -- each field's `description` below is that
-generator's source of truth, not just a comment.
+behavior). Each flag guards exactly one branch in effects.py, rules.py,
+resolution.py, or scenarios.py; grep the flag name to find its branch.
+This is what lets golden tests assert correct semantics against clean
+mode, lets the oracle attribute a divergence to a single flag by
+ablation, and lets ANSWER_KEY.md be generated from this file (via
+scripts/generate_answer_key.py) instead of drifting from it -- each
+field's `description` below is that generator's source of truth, not
+just a comment.
 
-Semantics of each flag are documented here; the numbering (B01..B10)
+Semantics of each flag are documented here; the numbering (B01..B11)
 matches ANSWER_KEY.md and RESULTS.md throughout the project.
 """
 from __future__ import annotations
@@ -125,6 +126,18 @@ class DefectFlags(BaseModel):
         ),
     )
 
+    tie_break_by_character_id: bool = Field(
+        default=False,
+        description=(
+            "When two or more characters are tied for the next turn (equal "
+            "action value), the tie is broken by sorting character id "
+            "(e1, e2, e3, p1, p2, p3) instead of the scenario's declared "
+            "turn order (p1, e1, p2, e2, p3, e3, ...). Clean: ties are "
+            "always broken by the declared turn order, so a full round at "
+            "equal speed proceeds party-then-enemy, alternating."
+        ),
+    )
+
     def enabled(self) -> list[str]:
         return [name for name, value in self.__dict__.items() if value is True]
 
@@ -140,11 +153,12 @@ ALL_DEFECT_IDS = {
     "B08": "enemy_no_basic_fallback",
     "B09": "elemental_multiplier_applied_twice",
     "B10": "zero_shield_not_removed",
+    "B11": "tie_break_by_character_id",
 }
 
 
 INVARIANT_VISIBLE = {"B03", "B05", "B06", "B07", "B08", "B10"}
-INVARIANT_INVISIBLE = {"B01", "B02", "B04", "B09"}
+INVARIANT_INVISIBLE = {"B01", "B02", "B04", "B09", "B11"}
 
 
 def single_flag(defect_id: str) -> DefectFlags:

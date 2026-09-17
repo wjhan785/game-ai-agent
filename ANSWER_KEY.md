@@ -8,12 +8,12 @@ checker is that grading doesn't depend on anyone having memorized this
 list, but the list itself should still be a first-class, auditable
 artifact rather than a private note.
 
-Ten defects, each gated by exactly one boolean flag in `DefectFlags`
-(all default `False` -- clean/correct behavior). Six are visible to the
-invariant checker (`engine/invariants.py`) on their own; four are not, and
-finding those four is where an exploration strategy actually has to earn
-its keep -- see RESULTS.md for the trigger-vs-detection numbers this
-split produces per method.
+11 defects, each gated by exactly one boolean flag in `DefectFlags`
+(all default `False` -- clean/correct behavior). 6 are visible
+to the invariant checker (`engine/invariants.py`) on their own; 5
+are not, and finding those is where an exploration strategy actually has
+to earn its keep -- see RESULTS.md for the trigger-vs-detection numbers
+this split produces per method.
 
 
 ## B01 -- `shield_absorbs_dot` (invariant-invisible)
@@ -55,4 +55,8 @@ The elemental advantage multiplier is applied twice: once inside the ability's o
 ## B10 -- `zero_shield_not_removed` (invariant-visible)
 
 A Shield whose absorption pool has reached zero is not removed from the status list, so later has_status(SHIELD) checks still return True. Clean: a Shield is stripped the moment its magnitude reaches zero (or its turn-count decay expires).
+
+## B11 -- `tie_break_by_character_id` (invariant-invisible)
+
+When two or more characters are tied for the next turn (equal action value), the tie is broken by sorting character id (e1, e2, e3, p1, p2, p3) instead of the scenario's declared turn order (p1, e1, p2, e2, p3, e3, ...). Clean: ties are always broken by the declared turn order, so a full round at equal speed proceeds party-then-enemy, alternating.
 

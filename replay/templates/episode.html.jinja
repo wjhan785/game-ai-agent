@@ -66,6 +66,14 @@
   .kv .k { color: var(--muted); }
 
   .reasoning { font-style: italic; color: var(--muted); font-size: 13px; padding: 8px 10px; margin: 10px 0; background: var(--panel-alt); border-left: 2px solid var(--party); border-radius: 4px; }
+  .mode { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .mode.llm { color: #9fc6ff; border-color: rgba(79,168,255,0.5); background: rgba(79,168,255,0.12); }
+  .mode.fallback { color: #f0c674; border-color: rgba(224,168,62,0.5); background: rgba(224,168,62,0.12); }
+  .agent-flag { background: rgba(224,168,62,0.1); border: 1px solid rgba(224,168,62,0.45); border-radius: 6px; padding: 8px 10px; margin: 10px 0; font-size: 12px; color: #f0c674; }
+  .agent-flag .ev { color: var(--muted); margin-top: 3px; }
+  .turn.has-flag { border-color: rgba(224,168,62,0.6); }
+  .audit { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; white-space: pre-wrap; color: var(--muted); background: var(--panel-alt); border-radius: 4px; padding: 8px 10px; margin: 10px 0; }
+  .audit .label { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
 
   .violations { background: rgba(224,85,85,0.1); border: 1px solid rgba(224,85,85,0.4); border-radius: 6px; padding: 8px 10px; margin: 10px 0; font-size: 12px; color: #ff9a9a; }
   .violations div { padding: 2px 0; }
@@ -110,7 +118,7 @@
     {% for c in roster %}
     <div class="char-card team-{{ c.team }}">
       <h3>{{ c.name }}</h3>
-      <div class="sub">{{ c.team }} · {{ c.element }} · {{ c.max_hp }} HP · {{ c.max_energy }} EN</div>
+      <div class="sub">{{ c.team }} · {{ c.element }} · spd {{ c.speed }} · {{ c.max_hp }} HP · {{ c.max_energy }} EN</div>
       {% for a in c.abilities %}
       <div class="ability-line">
         <span class="ability-name">{{ a.name }}</span>
@@ -127,16 +135,19 @@
     <label><input type="checkbox" id="expand-all"> expand all</label>
     <label><input type="checkbox" id="only-actions"> only turns with an action</label>
     <label><input type="checkbox" id="only-violations"> only turns with invariant violations</label>
+    <label><input type="checkbox" id="only-flags"> only turns the agent flagged</label>
   </div>
 
   <div id="turns">
   {% for t in turns %}
-    <div class="turn{% if t.invariant_violations %} has-violation{% endif %}"
+    <div class="turn{% if t.invariant_violations %} has-violation{% endif %}{% if t.agent_flags %} has-flag{% endif %}"
          data-has-action="{{ 'true' if t.action else 'false' }}"
-         data-has-violation="{{ 'true' if t.invariant_violations else 'false' }}">
+         data-has-violation="{{ 'true' if t.invariant_violations else 'false' }}"
+         data-has-flag="{{ 'true' if t.agent_flags else 'false' }}">
       <div class="turn-head" onclick="this.parentElement.classList.toggle('open')">
         <span class="idx">#{{ t.index }}</span>
         <span class="actor">{{ t.actor_name }}</span>
+        {% if t.decision_mode %}<span class="mode {{ t.decision_mode }}">{{ t.decision_mode }}</span>{% endif %}
         <span class="summary">
           {% if t.skipped_reason %}
             skipped ({{ t.skipped_reason }})
@@ -146,12 +157,13 @@
             —
           {% endif %}
           {% if t.invariant_violations %} · {{ t.invariant_violations|length }} violation(s){% endif %}
+          {% if t.agent_flags %} · {{ t.agent_flags|length }} agent flag(s){% endif %}
         </span>
         <span class="chev">▶</span>
       </div>
       <div class="turn-body">
         <div class="kv">
-          <div class="k">round</div><div>{{ t.round_number }}</div>
+          <div class="k">round / av</div><div>{{ t.round_number }}{% if t.elapsed_av is not none %} · clock {{ "%.1f"|format(t.elapsed_av) }}{% endif %}</div>
           {% if t.skipped_reason %}
           <div class="k">status</div><div><span class="skip-badge">{{ t.skipped_reason }}</span></div>
           {% endif %}
@@ -194,6 +206,14 @@
           {% endif %}
         </div>
 
+        {% for f in t.agent_flags %}
+        <div class="agent-flag">⚑ [{{ f.severity }}] {{ f.description }}<div class="ev">{{ f.evidence }}</div></div>
+        {% endfor %}
+
+        {% if t.agent_audit %}
+        <div class="audit"><span class="label">agent's audit before acting</span>{{ t.agent_audit }}</div>
+        {% endif %}
+
         {% if t.agent_reasoning %}
         <div class="reasoning">"{{ t.agent_reasoning }}"</div>
         {% endif %}
@@ -206,7 +226,7 @@
 
         <table class="roster-after">
           <thead>
-            <tr><th>character</th><th>hp</th><th>energy</th><th>statuses</th><th>cooldowns</th></tr>
+            <tr><th>character</th><th>hp</th><th>energy</th><th>spd / av</th><th>statuses</th><th>cooldowns</th></tr>
           </thead>
           <tbody>
             {% for s in t.after %}
@@ -220,6 +240,7 @@
                 <span class="bar-wrap"><span class="bar energy" style="width:{{ s.energy_pct }}%"></span></span>
                 {{ "%.0f"|format(s.energy) }}/{{ "%.0f"|format(s.max_energy) }}
               </td>
+              <td>{{ "%.0f"|format(s.speed) }} / {{ "%.1f"|format(s.action_value) }}</td>
               <td>
                 {% for st in s.statuses %}
                 <span class="status-chip">{{ st.status_type }} {{ "%.1f"|format(st.magnitude) }}×{{ st.turns_remaining }}</span>
@@ -249,17 +270,17 @@
   function applyFilters() {
     const onlyActions = document.getElementById("only-actions").checked;
     const onlyViolations = document.getElementById("only-violations").checked;
+    const onlyFlags = document.getElementById("only-flags").checked;
     document.querySelectorAll(".turn").forEach((t) => {
-      const hasAction = t.dataset.hasAction === "true";
-      const hasViolation = t.dataset.hasViolation === "true";
       let show = true;
-      if (onlyActions && !hasAction) show = false;
-      if (onlyViolations && !hasViolation) show = false;
+      if (onlyActions && t.dataset.hasAction !== "true") show = false;
+      if (onlyViolations && t.dataset.hasViolation !== "true") show = false;
+      if (onlyFlags && t.dataset.hasFlag !== "true") show = false;
       t.style.display = show ? "" : "none";
     });
   }
-  document.getElementById("only-actions").addEventListener("change", applyFilters);
-  document.getElementById("only-violations").addEventListener("change", applyFilters);
+  ["only-actions", "only-violations", "only-flags"].forEach((id) =>
+    document.getElementById(id).addEventListener("change", applyFilters));
 </script>
 </body>
 </html>

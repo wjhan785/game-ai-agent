@@ -54,6 +54,7 @@ def _build_character_legend(initial_state: dict) -> dict[str, dict[str, Any]]:
             "element": c["element"],
             "max_hp": c["max_hp"],
             "max_energy": c["max_energy"],
+            "speed": c.get("speed", 100.0),
             "abilities": c["abilities"],
         }
     return legend
@@ -78,6 +79,8 @@ def _snapshot_view(
         "alive": snap["alive"],
         "statuses": snap["statuses"],
         "cooldowns": {k: v for k, v in snap["cooldowns"].items() if v > 0},
+        "speed": meta.get("speed", 100.0),
+        "action_value": snap.get("action_value", 0.0),
     }
 
 
@@ -110,11 +113,15 @@ def _build_turn_view(
     return {
         "index": turn["index"],
         "round_number": turn["round_number"],
+        "elapsed_av": turn.get("elapsed_av"),
         "actor_id": actor_id,
         "actor_name": legend.get(actor_id, {}).get("name", actor_id),
         "skipped_reason": turn.get("skipped_reason"),
         "action": action_view,
         "agent_reasoning": turn.get("agent_reasoning"),
+        "agent_audit": turn.get("agent_audit"),
+        "decision_mode": turn.get("decision_mode"),
+        "agent_flags": turn.get("agent_flags") or [],
         "dot_hot_damage": turn.get("dot_hot_damage") or {},
         "energy_regen_delta": turn.get("energy_regen_delta") or {},
         "ability_effect": ability_effect,

@@ -55,6 +55,15 @@ class BattleEngine:
             return []
         return list(self._pending_legal)
 
+    def pending_record(self) -> resolution.TurnRecord | None:
+        """The pending decision's turn-slot as resolved so far (start-of-turn
+        ticks, energy regen, the pre-tick snapshot) -- a copy, so callers
+        can't reach into the engine's bookkeeping. None if no decision is
+        pending."""
+        if self._pending_record is None:
+            return None
+        return self._pending_record.model_copy(deep=True)
+
     def take_action(self, action: Action) -> resolution.TurnRecord:
         if self.state.finished:
             raise RuntimeError("battle already finished")

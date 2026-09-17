@@ -13,6 +13,7 @@ import json
 from pydantic import BaseModel
 
 from agent.llm import (
+    PRICE_PER_MTOK,
     ROLE_CONFIGS,
     Cassette,
     PeakHourBlocked,
@@ -29,16 +30,19 @@ from agent.llm import (
 
 def test_compute_cost_matches_published_rate_card():
     # 2000 cached prefix + 500 volatile miss + 80 output, per the project
-    # plan's own per-decision example -- exact value:
-    # 2000/1e6*0.007 + 500/1e6*0.22 + 80/1e6*0.66 = 0.0001768.
+    # plan's own per-decision example. Derived from the rate card rather
+    # than pinned, so a price update doesn't need a matching test edit --
+    # what this checks is that each token count lands on the right rate.
+    price = PRICE_PER_MTOK["off_peak"]
+    expected = 2000 / 1e6 * price["cache_hit_in"] + 500 / 1e6 * price["cache_miss_in"] + 80 / 1e6 * price["out"]
     cost = compute_cost(cache_hit_tokens=2000, cache_miss_tokens=500, completion_tokens=80)
-    assert abs(cost - 0.0001768) < 1e-9
+    assert abs(cost - expected) < 1e-12
 
 
 def test_compute_cost_cache_miss_is_much_more_expensive_than_cache_hit():
     hit_cost = compute_cost(cache_hit_tokens=1_000_000, cache_miss_tokens=0, completion_tokens=0)
     miss_cost = compute_cost(cache_hit_tokens=0, cache_miss_tokens=1_000_000, completion_tokens=0)
-    assert miss_cost / hit_cost > 30  # ~31x per the project plan
+    assert miss_cost / hit_cost > 30
 
 
 def test_compute_cost_zero_usage_is_zero():
@@ -186,3 +190,82 @@ def test_call_with_tools_replay_mode_missing_cassette_entry_is_reported_not_rais
     assert result.ok is False
     assert result.malformed is True
     assert "cassette" in result.failure_reason
+
+
+def test_replay_walks_the_recorded_repair_path(tmp_path):
+    # Recorded run: first response fails validation (missing `note`), the
+    # repair turn succeeds. Replay must follow both entries, not stop at
+    # the first one.
+    cassette = Cassette(dir_path=tmp_path)
+    messages = [{"role": "user", "content": "call report"}]
+    tools = [tool_schema("report", "Report status.", _Report)]
+
+    first = _fake_cassette_response("report", {"status": "ok"})
+    cassette.save(_request_body(ROLE_CONFIGS["inner"], list(messages), tools, 0.2), first)
+
+    bad_message = first["choices"][0]["message"]
+    repaired_messages = list(messages) + [
+        {k: v for k, v in bad_message.items() if v is not None},
+        {"role": "tool", "tool_call_id": "call_1", "content": "PLACEHOLDER"},
+    ]
+    # The repair message embeds the exact validation error text, so derive
+    # it the same way call_with_tools does.
+    from agent.llm import _parse_tool_call
+
+    failure = _parse_tool_call(bad_message, {"report": _Report}, UsageStats(), 0).failure_reason
+    repaired_messages[-1]["content"] = f"Invalid call: {failure}. Please retry with corrected arguments."
+    cassette.save(
+        _request_body(ROLE_CONFIGS["inner"], repaired_messages, tools, 0.2),
+        _fake_cassette_response("report", {"status": "ok", "note": "fixed"}),
+    )
+
+    result = call_with_tools(
+        role="inner", messages=messages, tools=tools, tool_models={"report": _Report},
+        mode="replay", cassette=cassette,
+    )
+    assert result.ok is True
+    assert result.retries_used == 1
+    assert result.args == {"status": "ok", "note": "fixed"}
+    assert result.usage.prompt_tokens == 20  # both recorded calls counted
+
+
+def test_spend_tracker_session_cap_ignores_earlier_spend(tmp_path):
+    path = tmp_path / "spend.json"
+    SpendTracker(path=path).record(5.0)  # earlier phases
+    tracker = SpendTracker(path=path, max_session_spend=0.75)
+    tracker.check_budget()  # $5 already spent, but this run has spent $0
+    tracker.record(0.80)
+    try:
+        tracker.check_budget()
+        assert False, "expected BudgetExceededError"
+    except Exception as exc:
+        assert "this run" in str(exc)
+
+
+def test_spend_tracker_hard_ceiling_always_enforced(tmp_path):
+    path = tmp_path / "spend.json"
+    SpendTracker(path=path).record(15.0)
+    try:
+        SpendTracker(path=path).check_budget()
+        assert False, "expected BudgetExceededError"
+    except Exception as exc:
+        assert "ceiling" in str(exc)
+
+
+def test_spend_tracker_refuses_unreadable_file(tmp_path):
+    path = tmp_path / "spend.json"
+    path.write_text("{not json", encoding="utf-8")
+    try:
+        SpendTracker(path=path)
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "unreadable" in str(exc)
+
+
+def test_extract_usage_reads_nested_cached_tokens():
+    from agent.llm import _DictUsage, _extract_usage
+
+    usage = _extract_usage(_DictUsage({"prompt_tokens": 100, "completion_tokens": 5,
+                                       "prompt_tokens_details": {"cached_tokens": 64}}))
+    assert usage.cache_hit_tokens == 64
+    assert usage.cache_miss_tokens == 36

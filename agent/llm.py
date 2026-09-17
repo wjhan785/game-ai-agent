@@ -10,15 +10,15 @@ ship pointing at the same model, and every reported number uses that one
 configuration.
 
 Request layout is a hard constraint, not a suggestion: DeepSeek caches
-shared PREFIXES automatically, and a cache hit is roughly 31x cheaper
-than a miss (see PRICE_PER_MTOK below). Callers must put stable content
+shared PREFIXES automatically, and a cache hit is roughly 50x cheaper
+than a miss at the current rate card (see PRICE_PER_MTOK below). Callers must put stable content
 first in `messages` (system prompt, tool definitions, scenario rules,
 episode goal) and volatile content last (current state, legal actions,
 recent diffs) -- this module does not enforce that ordering, since it
 doesn't own prompt construction, but `call_with_tools`'s cache-hit-rate
 reporting exists specifically so a caller can catch a silent prefix
 invalidator (a timestamp, an unsorted dict, nondeterministic set order)
-before it quietly costs 31x on a real sweep.
+before it quietly multiplies the input bill on a real sweep.
 """
 from __future__ import annotations
 
@@ -117,32 +117,63 @@ class BudgetExceededError(Exception):
     pass
 
 
+HARD_CEILING_USD = 15.0
+
+
 class SpendTracker:
     """Persists cumulative spend to `path` (default results/spend.json,
-    gitignored) so `--max-spend` holds across process restarts within a
-    sweep, not just within one run."""
+    gitignored) so caps hold across process restarts, not just within one
+    run. Three independent caps, any of which stops the next call:
+      - `hard_ceiling`: the project's total budget, always enforced.
+      - `max_spend`: a cumulative (all-time) ceiling.
+      - `max_session_spend`: spend since THIS tracker was created -- what
+        an entry point's `--max-spend` means, so a phase allocation ("the
+        pilot may spend $0.75") doesn't depend on what earlier phases cost.
+    """
 
-    def __init__(self, path: str | Path = "results/spend.json", max_spend: Optional[float] = None):
+    def __init__(
+        self,
+        path: str | Path = "results/spend.json",
+        max_spend: Optional[float] = None,
+        max_session_spend: Optional[float] = None,
+        hard_ceiling: float = HARD_CEILING_USD,
+    ):
         self.path = Path(path)
         self.max_spend = max_spend
+        self.max_session_spend = max_session_spend
+        self.hard_ceiling = hard_ceiling
         self.total_usd = self._load()
+        self.session_start_usd = self.total_usd
+
+    @property
+    def session_usd(self) -> float:
+        return self.total_usd - self.session_start_usd
 
     def _load(self) -> float:
-        if self.path.exists():
-            try:
-                return float(json.loads(self.path.read_text(encoding="utf-8")).get("total_usd", 0.0))
-            except (json.JSONDecodeError, ValueError):
-                return 0.0
-        return 0.0
+        if not self.path.exists():
+            return 0.0
+        try:
+            return float(json.loads(self.path.read_text(encoding="utf-8")).get("total_usd", 0.0))
+        except (json.JSONDecodeError, ValueError) as exc:
+            # Silently restarting from $0 would disarm every cap below.
+            raise RuntimeError(f"{self.path} is unreadable ({exc}); fix or remove it deliberately") from exc
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps({"total_usd": round(self.total_usd, 6)}, indent=2), encoding="utf-8")
 
     def check_budget(self) -> None:
+        if self.total_usd >= self.hard_ceiling:
+            raise BudgetExceededError(
+                f"total spend ${self.total_usd:.4f} has reached the ${self.hard_ceiling:.2f} project ceiling"
+            )
         if self.max_spend is not None and self.total_usd >= self.max_spend:
             raise BudgetExceededError(
                 f"spend ${self.total_usd:.4f} has reached the ${self.max_spend:.4f} cap"
+            )
+        if self.max_session_spend is not None and self.session_usd >= self.max_session_spend:
+            raise BudgetExceededError(
+                f"this run's spend ${self.session_usd:.4f} has reached its ${self.max_session_spend:.4f} cap"
             )
 
     def record(self, cost_usd: float) -> None:
@@ -197,6 +228,16 @@ class UsageStats(BaseModel):
     cache_hit_tokens: int = 0
     cache_miss_tokens: int = 0
     cost_usd: float = 0.0
+
+
+def add_usage(a: UsageStats, b: UsageStats) -> UsageStats:
+    return UsageStats(
+        prompt_tokens=a.prompt_tokens + b.prompt_tokens,
+        completion_tokens=a.completion_tokens + b.completion_tokens,
+        cache_hit_tokens=a.cache_hit_tokens + b.cache_hit_tokens,
+        cache_miss_tokens=a.cache_miss_tokens + b.cache_miss_tokens,
+        cost_usd=a.cost_usd + b.cost_usd,
+    )
 
 
 class CallResult(BaseModel):
@@ -287,64 +328,62 @@ def call_with_tools(
     reports the failure so it becomes a metric, not a crash).
     """
     role_config = ROLE_CONFIGS[role]
-    request = _request_body(role_config, messages, tools, temperature)
-
+    if mode == "replay" and cassette is None:
+        raise ValueError("mode='replay' requires a cassette")
     if mode != "replay":
         check_not_peak(allow_peak)
-    if spend is not None:
-        spend.check_budget()
 
-    if mode == "replay":
-        if cassette is None:
-            raise ValueError("mode='replay' requires a cassette")
-        cached = cassette.load(request)
-        if cached is None:
-            return CallResult(ok=False, malformed=True, failure_reason="no cassette entry for this request")
-        response_dict = cached["response"]
-        usage = _extract_usage(_DictUsage(response_dict.get("usage")))
-        message = response_dict["choices"][0]["message"]
-        return _parse_tool_call(message, tool_models, usage, retries_used=0)
-
-    client = get_client(role_config)
+    client = get_client(role_config) if mode != "replay" else None
     retries_used = 0
     total_usage = UsageStats()
 
+    # One loop for every mode, so a replay walks the exact repair path the
+    # recorded run took (each retry is its own cassette entry, keyed by
+    # the grown message list) instead of stopping at the first response.
     while True:
         request = _request_body(role_config, messages, tools, temperature)
-        response = client.chat.completions.create(
-            model=role_config.model,
-            messages=messages,
-            tools=tools,
-            tool_choice="required",
-            parallel_tool_calls=False,
-            temperature=temperature,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
-        usage = _extract_usage(response.usage)
-        total_usage = UsageStats(
-            prompt_tokens=total_usage.prompt_tokens + usage.prompt_tokens,
-            completion_tokens=total_usage.completion_tokens + usage.completion_tokens,
-            cache_hit_tokens=total_usage.cache_hit_tokens + usage.cache_hit_tokens,
-            cache_miss_tokens=total_usage.cache_miss_tokens + usage.cache_miss_tokens,
-            cost_usd=total_usage.cost_usd + usage.cost_usd,
-        )
-        if spend is not None:
+        if mode == "replay":
+            cached = cassette.load(request)
+            if cached is None:
+                return CallResult(
+                    ok=False,
+                    malformed=True,
+                    failure_reason="no cassette entry for this request",
+                    retries_used=retries_used,
+                    usage=total_usage,
+                )
+            response_dict = cached["response"]
+        else:
+            if spend is not None:
+                spend.check_budget()
+            response = client.chat.completions.create(
+                model=role_config.model,
+                messages=messages,
+                tools=tools,
+                tool_choice="required",
+                parallel_tool_calls=False,
+                temperature=temperature,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
+            response_dict = response.model_dump(mode="json")
+            if mode == "record" and cassette is not None:
+                cassette.save(request, response_dict)
+
+        usage = _extract_usage(_DictUsage(response_dict.get("usage")))
+        total_usage = add_usage(total_usage, usage)
+        if spend is not None and mode != "replay":
             spend.record(usage.cost_usd)
 
-        if mode == "record" and cassette is not None:
-            cassette.save(request, response.model_dump(mode="json"))
-
-        message = response.choices[0].message
-        result = _parse_tool_call(message.model_dump(mode="json"), tool_models, total_usage, retries_used)
+        message = response_dict["choices"][0]["message"]
+        result = _parse_tool_call(message, tool_models, total_usage, retries_used)
         if result.ok or retries_used >= max_retries:
             return result
 
         # Repair turn: echo the assistant's (malformed) call, then a tool
         # message carrying the validation error, and try again.
-        messages.append(message.model_dump(mode="json", exclude_none=True))
-        tool_call_id = None
-        if message.tool_calls:
-            tool_call_id = message.tool_calls[0].id
+        messages.append(_strip_none(message))
+        tool_calls = message.get("tool_calls") or []
+        tool_call_id = tool_calls[0].get("id") if tool_calls else None
         if tool_call_id is not None:
             messages.append(
                 {
@@ -363,6 +402,14 @@ def call_with_tools(
         retries_used += 1
 
 
+def _strip_none(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _strip_none(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_strip_none(v) for v in obj]
+    return obj
+
+
 class _DictUsage:
     """Adapts a plain dict (from a cassette) to the attribute access
     `_extract_usage` expects from an SDK usage object."""
@@ -371,12 +418,10 @@ class _DictUsage:
         self._d = d or {}
 
     def __getattr__(self, name: str) -> Any:
-        if name in self._d:
-            return self._d[name]
-        details = self._d.get("prompt_tokens_details")
-        if name == "prompt_tokens_details" and details is not None:
-            return _DictUsage(details)
-        return None
+        value = self._d.get(name)
+        if isinstance(value, dict):
+            return _DictUsage(value)
+        return value
 
 
 def _parse_tool_call(

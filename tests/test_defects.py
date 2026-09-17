@@ -253,3 +253,36 @@ def test_b10_zero_shield_persists_when_flagged():
     shield = next((s for s in target.statuses if s.status_type == StatusType.SHIELD), None)
     assert shield is not None
     assert shield.magnitude <= 0
+
+
+# --- B11: turn-order ties broken by character id, not declared order ----
+
+def test_b11_tie_break_uses_character_id_when_flagged():
+    # Real scenarios carry varied per-character speeds by design (see
+    # scenarios.py), so this needs a scenario where every character is at
+    # the same speed -- a full six-way tie at battle start -- to isolate
+    # the tie-break rule itself from any scenario's own speed balance.
+    def uniform_speed(seed, defects):
+        from engine.content import make_character
+
+        party = [make_character(cid, cid, "party", Element.NEUTRAL, 100, 50, 20, []) for cid in ("p1", "p2", "p3")]
+        enemy = [make_character(cid, cid, "enemy", Element.NEUTRAL, 100, 50, 20, []) for cid in ("e1", "e2", "e3")]
+        return party + enemy, scenarios_module._interleave(party, enemy)
+
+    scenarios_module.SCENARIOS["_T_B11_UNIFORM"] = uniform_speed
+    try:
+        clean = BattleEngine("_T_B11_UNIFORM", seed=0, defects=DefectFlags())
+        assert clean.state.current_actor_id() == "p1"  # declared order: p1 first
+
+        buggy = BattleEngine("_T_B11_UNIFORM", seed=0, defects=single_flag("B11"))
+        assert buggy.state.current_actor_id() == "e1"  # id-sorted: e1 before p1
+    finally:
+        del scenarios_module.SCENARIOS["_T_B11_UNIFORM"]
+
+
+def test_b11_clean_turn_order_is_declared_not_sorted():
+    buggy_order = scenarios_module.build_battle_state("S1", seed=0, defects=single_flag("B11"), turn_cap=20).turn_order
+    clean_order = scenarios_module.build_battle_state("S1", seed=0, defects=CLEAN, turn_cap=20).turn_order
+    assert buggy_order == sorted(clean_order)
+    assert clean_order == ["p1", "e1", "p2", "e2", "p3", "e3"]
+    assert clean_order != buggy_order

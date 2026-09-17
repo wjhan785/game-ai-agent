@@ -18,7 +18,7 @@ why that gap is the interesting part of this project.
 """
 from __future__ import annotations
 
-from engine.models import BattleState, NON_STACKING_STATUSES, StatusType
+from engine.models import CYCLE_AV, BattleState, NON_STACKING_STATUSES, StatusType
 from engine.resolution import TurnRecord
 
 PERIODIC_STATUS_TYPES = frozenset(
@@ -34,6 +34,7 @@ def check(state: BattleState, record: TurnRecord) -> list[str]:
     violations.extend(_check_zero_shield_present(state))
     violations.extend(_check_illegal_action_on_cooldown(state, record))
     violations.extend(_check_dead_actor_took_action(record))
+    violations.extend(_check_action_values(state))
     return violations
 
 
@@ -109,3 +110,33 @@ def _check_dead_actor_took_action(record: TurnRecord) -> list[str]:
     if before is not None and not before.alive:
         return [f"{record.actor_id}: took an action while dead"]
     return []
+
+
+def _check_action_values(state: BattleState) -> list[str]:
+    """Internal scheduler consistency only -- never WHICH character was
+    selected. Selection conformance to the declared tie-break order is a
+    spec question (that is exactly what defect B11 violates, and what the
+    differential oracle -- not this checker -- is the ground truth for);
+    encoding the correct-selection rule here would make this module a
+    second scheduler implementation and catch B11 for the wrong reason,
+    the same independence this module's own docstring insists on for
+    every other defect.
+    """
+    out = []
+    for cid, c in state.characters.items():
+        if c.speed <= 0:
+            out.append(f"{cid}: speed is not positive ({c.speed})")
+        if c.action_value < 0:
+            out.append(f"{cid}: action_value went negative ({c.action_value})")
+        if c.action_value < state.elapsed_av - 1e-6:
+            out.append(
+                f"{cid}: action_value ({c.action_value}) is behind the scheduler "
+                f"clock ({state.elapsed_av})"
+            )
+    expected_round = int((state.elapsed_av - state.opening_av) / CYCLE_AV)
+    if state.round_number != expected_round:
+        out.append(
+            f"round_number {state.round_number} inconsistent with elapsed_av "
+            f"{state.elapsed_av} (expected {expected_round})"
+        )
+    return out

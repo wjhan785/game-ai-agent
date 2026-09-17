@@ -1,64 +1,133 @@
-"""Tests for agent/runner.py, offline via cassette replay mode. Focuses
-on reasoning_by_log_index, which pairs each action-bearing TurnRecord
-with the decision that produced it so replay/generate.py can show the
-agent's stated reasoning per turn -- this was silently dropped until
-fixed, so it gets its own regression test.
-"""
+"""agent/runner.py, offline: gating, ledger bookkeeping, decision
+annotations for the episode log, and a clean abort when the spend cap is
+hit. Replay mode with an empty cassette makes every LLM decision fall back
+to the first legal action -- deterministic and free."""
 from __future__ import annotations
 
-from engine.defects import DefectFlags
+from engine.defects import single_flag
 from engine.engine import BattleEngine
-from agent.runner import reasoning_by_log_index
+from engine.episode_log import read_episode_jsonl
+from agent.ledger import Ledger
+from agent.llm import Cassette, SpendTracker
+from agent.runner import EpisodeConfig, MemoryNovelty, decision_annotations, run_episode, write_episode
 from agent.tools import ToolDispatcher
 
 
-def test_reasoning_by_log_index_pairs_actions_with_decisions_in_order():
-    engine = BattleEngine("S1", seed=1, defects=DefectFlags(), turn_cap=20)
-    dispatcher = ToolDispatcher(engine)
+def _replay(tmp_path):
+    return dict(mode="replay", cassette=Cassette(dir_path=tmp_path / "empty_cassette"))
 
+
+def test_every_decision_asks_the_model_without_gating(tmp_path):
+    result = run_episode(EpisodeConfig(scenario_id="S1", seed=1, turn_cap=3, gating=False), **_replay(tmp_path))
+    assert result.decisions
+    assert all(d["mode"] == "fallback" for d in result.decisions)
+
+
+def test_gating_scripts_turns_on_already_visited_states(tmp_path):
+    novelty = MemoryNovelty()
+    config = EpisodeConfig(scenario_id="S1", seed=1, turn_cap=3)
+    first = run_episode(config, novelty=novelty, **_replay(tmp_path))
+    assert first.decisions[0]["mode"] == "fallback"  # novel state -> model asked (and fell back)
+    second = run_episode(config, novelty=novelty, **_replay(tmp_path))
+    assert second.decisions[0]["mode"] == "scripted"  # same opening state, already visited
+
+
+def test_focus_characters_always_get_the_model(tmp_path):
+    novelty = MemoryNovelty()
+    run_episode(EpisodeConfig(scenario_id="S1", seed=1, turn_cap=3), novelty=novelty, **_replay(tmp_path))
+    focused = run_episode(
+        EpisodeConfig(scenario_id="S1", seed=1, turn_cap=3, focus_actor_ids=["p1"]), novelty=novelty, **_replay(tmp_path)
+    )
+    # p1 need not be the first actor (scenarios carry varied speeds) -- but
+    # whichever decision is p1's must go to the model despite the state
+    # already being visited, since focus overrides novelty-gating.
+    p1_decision = next(d for d in focused.decisions if d["actor_id"] == "p1")
+    assert p1_decision["mode"] == "fallback"
+
+
+def test_scripted_policy_is_deterministic(tmp_path):
+    def run():
+        novelty = MemoryNovelty()
+        config = EpisodeConfig(scenario_id="S2", seed=4, turn_cap=4)
+        run_episode(config, novelty=novelty, **_replay(tmp_path))
+        return [r.action for r in run_episode(config, novelty=novelty, **_replay(tmp_path)).engine.log]
+
+    assert run() == run()
+
+
+def test_ledger_bookkeeping_records_invariant_flags_coverage_and_visits(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.db")
+    ep = ledger.start_episode("S5", 1, {}, "p")
+    result = run_episode(
+        EpisodeConfig(scenario_id="S5", seed=1, turn_cap=12, gating=False),
+        defects=single_flag("B08"), ledger=ledger, episode_id=ep, run_dir=tmp_path, **_replay(tmp_path),
+    )
+    invariant = ledger.flags(source="invariant", episode=ep)
+    assert any("no-progress" in f["description"] for f in invariant)
+    assert ledger.visit_stats()["total_visits"] == len(result.decisions)
+    assert len(ledger.coverage()) == len(result.new_coverage)  # fresh ledger: everything seen is new
+
+
+def test_invariant_flags_are_deduplicated_per_kind(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.db")
+    ep = ledger.start_episode("S5", 1, {}, "p")
+    run_episode(
+        EpisodeConfig(scenario_id="S5", seed=1, turn_cap=20, gating=False),
+        defects=single_flag("B08"), ledger=ledger, episode_id=ep, run_dir=tmp_path, **_replay(tmp_path),
+    )
+    from agent.ledger import invariant_kind
+
+    kinds = [invariant_kind(f["description"]) for f in ledger.flags(source="invariant", episode=ep)]
+    assert len(kinds) == len(set(kinds))
+
+
+def test_decision_annotations_pair_actions_with_decisions_in_order():
+    engine = BattleEngine("S1", seed=1)
+    dispatcher = ToolDispatcher(engine)
     decisions = []
     for i in range(3):
-        options = dispatcher.list_legal_actions()["options"]
-        actor_id = dispatcher.engine.state.current_actor_id()
-        chosen = options[0]
+        opt = dispatcher.list_legal_actions()["options"][0]
         dispatcher.take_action(
-            actor_id=actor_id,
-            ability_name=chosen["ability_name"],
-            target_id=chosen["target_id"],
-            reasoning=f"reason-{i}",
+            actor_id=engine.state.current_actor_id(), ability_name=opt["ability_name"],
+            target_id=opt["target_id"], reasoning=f"reason-{i}",
         )
-        decisions.append({"reasoning": f"reason-{i}"})
+        decisions.append({"mode": "llm", "reasoning": f"reason-{i}", "flags": [{"description": "d"}] if i == 1 else []})
 
-    extra = reasoning_by_log_index(engine, decisions)
-    action_indices = [i for i, r in enumerate(engine.log) if r.action is not None]
-    assert len(action_indices) == 3
-    for i, idx in enumerate(action_indices):
-        assert extra[idx]["agent_reasoning"] == f"reason-{i}"
-
-
-def test_reasoning_by_log_index_skips_entries_with_no_reasoning():
-    engine = BattleEngine("S1", seed=1, defects=DefectFlags(), turn_cap=20)
-    dispatcher = ToolDispatcher(engine)
-    options = dispatcher.list_legal_actions()["options"]
-    actor_id = dispatcher.engine.state.current_actor_id()
-    dispatcher.take_action(
-        actor_id=actor_id, ability_name=options[0]["ability_name"], target_id=options[0]["target_id"], reasoning="x"
-    )
-    extra = reasoning_by_log_index(engine, [{"reasoning": None}])
-    assert extra == {}
+    extra = decision_annotations(engine, decisions)
+    idx = [i for i, r in enumerate(engine.log) if r.action is not None]
+    assert [extra[i]["agent_reasoning"] for i in idx] == ["reason-0", "reason-1", "reason-2"]
+    assert extra[idx[1]]["agent_flags"] == [{"description": "d"}]
+    assert all(extra[i]["decision_mode"] == "llm" for i in idx)
 
 
-def test_reasoning_by_log_index_stops_when_decisions_exhausted():
-    engine = BattleEngine("S1", seed=1, defects=DefectFlags(), turn_cap=20)
+def test_decision_annotations_stop_when_decisions_run_out():
+    engine = BattleEngine("S1", seed=1)
     dispatcher = ToolDispatcher(engine)
     for _ in range(2):
-        options = dispatcher.list_legal_actions()["options"]
-        actor_id = dispatcher.engine.state.current_actor_id()
-        dispatcher.take_action(
-            actor_id=actor_id, ability_name=options[0]["ability_name"], target_id=options[0]["target_id"], reasoning="x"
-        )
-    # Only one decision recorded even though two actions were taken --
-    # must not raise, must not fabricate a pairing for the second.
-    extra = reasoning_by_log_index(engine, [{"reasoning": "only-one"}])
-    action_indices = [i for i, r in enumerate(engine.log) if r.action is not None]
-    assert extra == {action_indices[0]: {"agent_reasoning": "only-one"}}
+        opt = dispatcher.list_legal_actions()["options"][0]
+        dispatcher.take_action(actor_id=engine.state.current_actor_id(), ability_name=opt["ability_name"],
+                               target_id=opt["target_id"], reasoning="x")
+    extra = decision_annotations(engine, [{"mode": "scripted", "reasoning": None}])
+    first_action = next(i for i, r in enumerate(engine.log) if r.action is not None)
+    assert extra == {first_action: {"decision_mode": "scripted"}}
+
+
+def test_write_episode_carries_annotations(tmp_path):
+    result = run_episode(EpisodeConfig(scenario_id="S1", seed=1, turn_cap=2, gating=False), **_replay(tmp_path))
+    path = write_episode(result, tmp_path / "ep.jsonl", method="test")
+    _header, turns, _footer = read_episode_jsonl(path)
+    modes = [t.get("decision_mode") for t in turns if t.get("action")]
+    assert modes and all(m == "fallback" for m in modes)
+
+
+def test_spend_cap_aborts_cleanly_before_any_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    spend = SpendTracker(path=tmp_path / "spend.json", max_session_spend=0.0)
+    result = run_episode(
+        EpisodeConfig(scenario_id="S1", seed=1, turn_cap=3, gating=False),
+        mode="live", spend=spend, allow_peak=True,
+    )
+    assert result.aborted_reason is not None and "cap" in result.aborted_reason
+    assert result.decisions == []
+    assert not result.engine.state.finished
+    assert spend.total_usd == 0.0

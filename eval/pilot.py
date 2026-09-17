@@ -1,0 +1,62 @@
+"""Week 3 pilot: run the full agent (planner + ledger + gated inner loop)
+against the buggy build -- every seeded defect enabled at once -- then
+write the bug report and replays.
+
+This is the one place the build is constructed. It lives in eval/, which
+may import engine.defects; the agent receives the DefectFlags only as an
+opaque object passed through to BattleEngine.
+
+    python -m eval.pilot --run-name pilot --episodes 25 --max-spend 0.75
+"""
+from __future__ import annotations
+
+import argparse
+import json
+
+from agent.llm import Cassette, SpendTracker
+from agent.outer_loop import SCENARIO_NOTES, SessionConfig, run_session
+from engine.defects import ALL_DEFECT_IDS, DefectFlags
+from eval.bug_report import generate_report
+
+
+def full_build() -> DefectFlags:
+    return DefectFlags(**{field: True for field in ALL_DEFECT_IDS.values()})
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run a full-agent campaign against the buggy build, then report.")
+    parser.add_argument("--run-name", required=True)
+    parser.add_argument("--episodes", type=int, default=25)
+    parser.add_argument("--turn-cap", type=int, default=20)
+    parser.add_argument("--scenarios", nargs="+", default=list(SCENARIO_NOTES))
+    parser.add_argument("--no-gating", action="store_true")
+    parser.add_argument("--mode", choices=["live", "record", "replay"], default="record")
+    parser.add_argument("--max-spend", type=float, default=0.75, help="cap on THIS run's spend, USD")
+    parser.add_argument("--allow-peak", action="store_true")
+    parser.add_argument("--runs-root", default="logs/runs")
+    parser.add_argument("--no-report", action="store_true")
+    args = parser.parse_args()
+
+    cassette = Cassette() if args.mode in ("record", "replay") else None
+    spend = SpendTracker(max_session_spend=args.max_spend) if args.mode != "replay" else None
+    config = SessionConfig(
+        run_name=args.run_name,
+        episodes=args.episodes,
+        turn_cap=args.turn_cap,
+        gating=not args.no_gating,
+        allowed_scenarios=args.scenarios,
+    )
+    summary = run_session(
+        config, runs_root=args.runs_root, defects=full_build(), mode=args.mode,
+        cassette=cassette, spend=spend, allow_peak=args.allow_peak,
+        progress=lambda line: print(line, flush=True),
+    )
+    print(json.dumps({k: v for k, v in summary.items() if k != "config"}, indent=2), flush=True)
+    if spend is not None:
+        print(f"this run: ${spend.session_usd:.4f}   cumulative (results/spend.json): ${spend.total_usd:.4f}", flush=True)
+    if not args.no_report:
+        print(f"wrote {generate_report(f'{args.runs_root}/{args.run_name}')}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

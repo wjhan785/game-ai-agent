@@ -54,7 +54,16 @@ from engine.effects import (
     tick_regen,
 )
 from engine.elements import elemental_multiplier
-from engine.models import Action, BattleState, Character, StatusEffect, StatusType, TargetType
+from engine.models import (
+    BASE_ACTION_VALUE,
+    CYCLE_AV,
+    Action,
+    BattleState,
+    Character,
+    StatusEffect,
+    StatusType,
+    TargetType,
+)
 
 
 class CharacterSnapshot(BaseModel):
@@ -63,6 +72,7 @@ class CharacterSnapshot(BaseModel):
     alive: bool
     statuses: list[StatusEffect]
     cooldowns: dict[str, int]
+    action_value: float = 0.0
 
 
 def snapshot(character: Character) -> CharacterSnapshot:
@@ -72,6 +82,7 @@ def snapshot(character: Character) -> CharacterSnapshot:
         alive=character.alive,
         statuses=[s.model_copy() for s in character.statuses],
         cooldowns=dict(character.cooldowns),
+        action_value=character.action_value,
     )
 
 
@@ -89,6 +100,7 @@ class TurnRecord(BaseModel):
     step_count: int
     round_number: int
     actor_id: str
+    elapsed_av: float  # the scheduler clock at the top of this turn-slot -- equals before[actor_id].action_value
     skipped_reason: Optional[str] = None  # "dead" | "stunned" | "no_legal_actions"
     action: Optional[Action] = None
     dot_hot_damage: dict[str, dict[str, float]] = Field(default_factory=dict)
@@ -116,6 +128,7 @@ def resolve_pre(state: BattleState, defects: DefectFlags) -> TurnRecord:
         step_count=state.step_count,
         round_number=state.round_number,
         actor_id=actor_id,
+        elapsed_av=state.elapsed_av,
         before=_snapshot_all(state),
     )
 
@@ -216,13 +229,16 @@ def _resolve_ability_effect(
                 # (apply_damage_modifiers) applies it again below.
                 raw = raw * elemental_multiplier(ability.element, target.element)
             damage = apply_damage_modifiers(ability, actor, target, raw)
+            pre_shield = damage
             damage = apply_shield_absorption(target, damage, defects)
-            shield_after = get_status(target, StatusType.SHIELD)
-            absorbed = ability.base_power - damage if shield_after is not None else 0.0
             target.hp = max(0.0, target.hp - damage)
             record.per_target_damage[target_id] = damage
-            if damage < ability.base_power:
-                record.per_target_shield_absorbed[target_id] = ability.base_power - damage
+            # Measured across the absorption call itself -- comparing against
+            # base_power would misreport elemental disadvantage or Weaken as
+            # shield absorption on a target with no shield at all.
+            absorbed = pre_shield - damage
+            if absorbed > 0:
+                record.per_target_shield_absorbed[target_id] = absorbed
 
             if target.hp <= 0 and target.alive:
                 target.alive = False
@@ -258,7 +274,7 @@ def resolve_action(
 
 
 def resolve_post(state: BattleState, defects: DefectFlags, record: TurnRecord) -> None:
-    """Step 8 (end-of-turn bookkeeping) plus advancing the turn pointer.
+    """Step 8 (end-of-turn bookkeeping) plus advancing the scheduler.
 
     Cooldowns are always decremented here, once per own-turn, after the
     legal-move check for this turn's action has already run. Defect B06
@@ -277,13 +293,21 @@ def resolve_post(state: BattleState, defects: DefectFlags, record: TurnRecord) -
     if actor.alive:
         decrement_status_durations(actor, defects)
 
+    # Advance the scheduler: this turn-slot's actor is rescheduled one full
+    # personal cycle after the clock reading that selected them
+    # (state.elapsed_av, which equals their own pre-advance action_value)
+    # -- unconditionally, whether they acted, were skipped for being dead
+    # or stunned, or had no legal action, exactly as the old fixed pointer
+    # advanced for every turn-slot regardless of skip reason. Snapshotting
+    # `after` AFTER this bump means it reflects "when this character will
+    # next be up", the same forward-looking sense as its decremented
+    # cooldowns and statuses above.
+    actor.action_value = state.elapsed_av + BASE_ACTION_VALUE / actor.speed
+
     record.after = _snapshot_all(state)
 
-    # Advance to the next turn-slot.
-    state.turn_pointer += 1
-    if state.turn_pointer >= len(state.turn_order):
-        state.turn_pointer = 0
-        state.round_number += 1
+    state.elapsed_av = min(c.action_value for c in state.characters.values())
+    state.round_number = int((state.elapsed_av - state.opening_av) / CYCLE_AV)
     state.step_count += 1
 
     check_battle_end(state)
