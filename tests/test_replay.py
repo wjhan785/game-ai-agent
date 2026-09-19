@@ -1,9 +1,4 @@
-"""replay/generate.py: run a scripted episode, write it to JSONL, render
-it to HTML, and sanity-check the output contains what the episode
-actually did -- this is the "read every turn against the raw JSONL by
-hand" check from the project plan's verification list, automated enough
-to catch a regression without a human reading it every time."""
-from __future__ import annotations
+"""replay/generate.py: render a scripted episode and check the HTML matches it."""
 
 from engine.defects import DefectFlags, single_flag
 from engine.engine import BattleEngine
@@ -34,9 +29,7 @@ def test_view_model_reflects_engine_log(tmp_path):
     assert vm["meta"]["scenario_id"] == "S1"
     assert vm["meta"]["total_turns"] == len(engine.log)
     assert len(vm["roster"]) == len(initial_state.characters)
-    # Every actor named in a turn view must resolve to a real roster name,
-    # not fall back to the raw character id (proves the legend lookup wired
-    # correctly end to end).
+    # Actors resolve to roster names, not raw ids.
     roster_names = {c["name"] for c in vm["roster"]}
     for t in vm["turns"]:
         assert t["actor_name"] in roster_names
@@ -55,8 +48,6 @@ def test_generate_replay_html_produces_a_self_contained_file(tmp_path):
     assert "<html" in html
     assert "S5" in html
     assert "B08" in html  # defect badge rendered
-    # Every character name from the initial roster should appear somewhere
-    # (roster legend section at minimum).
     for c in initial_state.characters.values():
         assert c.name in html
     # No unresolved Jinja2 template syntax leaked into the output.

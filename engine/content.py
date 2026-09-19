@@ -1,12 +1,5 @@
-"""Ability and character content library.
-
-Plain data, built once as module-level constants. Character instances are
-built fresh per scenario/seed by `make_character` so their per-instance
-mutable state (hp, energy, statuses, cooldowns) is never shared -- Ability
-objects themselves are safe to share, since nothing at runtime mutates an
-Ability; only Character.cooldowns tracks per-character cooldown state.
-"""
-from __future__ import annotations
+"""Ability and character data. Abilities are shared constants;
+characters are built fresh by `make_character`."""
 
 from engine.models import (
     Ability,
@@ -181,11 +174,7 @@ CATACLYSM = Ability(
     base_power=32.0,
 )
 
-# --- A deliberately unaffordable enemy kit, for the S5-adjacent B08
-# showcase: every non-basic ability costs more energy than max_energy
-# allows to ever accumulate, so Basic Attack is the ONLY thing keeping
-# this character functional. Toggle DefectFlags.enemy_no_basic_fallback
-# to strip it and produce a permanently-stuck character.
+# --- An unaffordable ability: without Basic Attack (B08) its owner is stuck.
 OVERTUNED_BOLT = Ability(
     name="Overtuned Bolt",
     element=Element.LIGHTNING,
@@ -209,14 +198,8 @@ def make_character(
     strip_basic_attack: bool = False,
     speed: float = 100.0,
 ) -> Character:
-    """Builds one Character instance. `strip_basic_attack` implements
-    defect B08's content-side half -- the engine-side half is that no
-    OTHER code path grants a fallback when this is missing.
-
-    `speed` must come from the palette documented on engine.models'
-    BASE_ACTION_VALUE (default 100 -- the reference speed) so that
-    BASE_ACTION_VALUE / speed stays exactly representable in float64;
-    see build_battle_state for how it becomes an initial action_value."""
+    """One fresh Character. `strip_basic_attack` is B08's content side;
+    `speed` must come from the palette in engine.models."""
     kit = list(abilities)
     if not strip_basic_attack:
         kit = [basic_attack(element=element)] + kit

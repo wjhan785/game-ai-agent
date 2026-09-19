@@ -1,13 +1,4 @@
-"""For each of the six invariant-visible defects (engine.defects.
-INVARIANT_VISIBLE), enabling that one flag and driving a scenario built to
-exercise it must trip the invariant checker; clean mode on the same
-scenario/seed must never trip it. The four invariant-invisible defects
-(B01, B02, B04, B09) are deliberately absent here -- proving they're
-invisible to the checker is the point of test_defects.py's direct
-effects-level assertions plus RESULTS.md's trigger-vs-detection numbers,
-not something this file should paper over.
-"""
-from __future__ import annotations
+"""Each invariant-visible defect trips the checker; clean mode never does."""
 
 import sys
 from pathlib import Path

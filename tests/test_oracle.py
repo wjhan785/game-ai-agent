@@ -1,18 +1,5 @@
-"""Tests for the differential oracle (oracle/differential.py) and
-single-flag attribution (oracle/attribute.py) -- verification step 3 in
-the project plan: replaying a trace under the flags that produced it must
-reproduce it exactly, and attribution must name the correct defect for a
-trace known to exercise it.
-
-This does not attempt to prove all ten defects are reachable by a naive
-policy -- that is what the reachability-ceiling sweep (100k random
-rollouts per bug, see the project plan's methodological guards) is for,
-and it runs separately once the random baseline exists. Two scenarios
-here are reused directly from tests/test_defects.py because they already
-drive a full BattleEngine episode (not just a unit-level effects call)
-and are known, by that file's own assertions, to exercise B06 and B08.
-"""
-from __future__ import annotations
+"""Differential oracle and single-flag attribution: a trace replays exactly
+under its own flags, and attribution names the right defect."""
 
 from engine.defects import ALL_DEFECT_IDS, DefectFlags, single_flag
 from engine.engine import BattleEngine

@@ -1,19 +1,5 @@
-"""The eleven seeded defects, as switches -- not baked in.
-
-Every defect is a boolean flag, defaulting to False (clean/correct
-behavior). Each flag guards exactly one branch in effects.py, rules.py,
-resolution.py, or scenarios.py; grep the flag name to find its branch.
-This is what lets golden tests assert correct semantics against clean
-mode, lets the oracle attribute a divergence to a single flag by
-ablation, and lets ANSWER_KEY.md be generated from this file (via
-scripts/generate_answer_key.py) instead of drifting from it -- each
-field's `description` below is that generator's source of truth, not
-just a comment.
-
-Semantics of each flag are documented here; the numbering (B01..B11)
-matches ANSWER_KEY.md and RESULTS.md throughout the project.
-"""
-from __future__ import annotations
+"""The eleven seeded defects as boolean switches (all default False).
+Grep a flag name to find its branch. Field descriptions generate ANSWER_KEY.md."""
 
 from pydantic import BaseModel, Field
 

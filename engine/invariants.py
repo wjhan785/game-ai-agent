@@ -1,22 +1,6 @@
-"""Post-action invariant checks.
-
-This module runs after every single action, independently of whether the
-agent (or anyone) noticed anything wrong -- that independence is the whole
-point: deterministic code catches state corruption; the LLM's job is only
-to decide what to try next, never to be the thing eyeballing a raw state
-dump for an off-by-one.
-
-Deliberately, nothing in this module imports engine.defects or references
-a defect flag. These are checks on STATE VALIDITY, not on which switch is
-flipped -- the same independence property that makes the differential
-oracle a meaningful ground truth (see oracle/differential.py) applies here.
-A violation says "something about this state is wrong"; it says nothing
-about which of the ten seeded defects caused it. Six of the ten are
-reliably visible here (see engine.defects.INVARIANT_VISIBLE); the other
-four are not, by design -- see docs/scenario-matrix.md and RESULTS.md for
-why that gap is the interesting part of this project.
-"""
-from __future__ import annotations
+"""Invariant checks run after every action. They test state validity only
+and never look at defect flags, so they catch some defects (INVARIANT_VISIBLE)
+and, by design, miss the rest."""
 
 from engine.models import CYCLE_AV, BattleState, NON_STACKING_STATUSES, StatusType
 from engine.resolution import TurnRecord
@@ -113,15 +97,8 @@ def _check_dead_actor_took_action(record: TurnRecord) -> list[str]:
 
 
 def _check_action_values(state: BattleState) -> list[str]:
-    """Internal scheduler consistency only -- never WHICH character was
-    selected. Selection conformance to the declared tie-break order is a
-    spec question (that is exactly what defect B11 violates, and what the
-    differential oracle -- not this checker -- is the ground truth for);
-    encoding the correct-selection rule here would make this module a
-    second scheduler implementation and catch B11 for the wrong reason,
-    the same independence this module's own docstring insists on for
-    every other defect.
-    """
+    """Scheduler consistency only, never WHO was selected: checking that
+    would re-implement the scheduler (the oracle's job, not this module's)."""
     out = []
     for cid, c in state.characters.items():
         if c.speed <= 0:

@@ -1,7 +1,6 @@
 """Round-trip test for engine/episode_log.py: write a scripted episode to
 JSONL, read it back, and confirm the header/turns/footer reflect what the
 engine actually did."""
-from __future__ import annotations
 
 from engine.defects import DefectFlags
 from engine.engine import BattleEngine

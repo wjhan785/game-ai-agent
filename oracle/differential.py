@@ -1,52 +1,15 @@
-"""The differential oracle: replay a recorded action sequence against an
-engine running a different DefectFlags configuration, and report the
-first point where the trajectories disagree.
+"""Differential oracle: replay a recorded action sequence under another
+build and report the first step where the two runs disagree.
 
-Why step index is a safe alignment key: turn order is now speed-driven
-(BattleState.current_actor_id picks the character with the lowest
-action_value, tie-broken by turn_order), not a fixed cycle -- so the
-argument for positional alignment can no longer rest on the schedule
-being the same list every time. It rests on this instead: action_value is
-part of `CharacterSnapshot`, and `_diff_records` below compares full
-`after` snapshots -- so "the two runs agree at every step up to i" is a
-claim about a superset of everything the scheduler reads (every
-character's hp/energy/alive/statuses/cooldowns/action_value). Identical
-snapshots at step i-1 therefore imply an identical `current_actor_id()`
-selection at step i, by construction, not by assumption -- and
-`_diff_records` checks `actor_id` FIRST, precisely because a scheduling
-difference is real evidence on its own, before any state difference
-explains it. `BattleEngine._advance_to_decision` still advances
-`elapsed_av`/`round_number`/`step_count` for EVERY turn-slot, whether or
-not a decision was needed, so that sequence is identical across any two
-DefectFlags configurations up to and including the first step where the
-runs actually disagree. That is what makes comparing `TurnRecord` logs
-positionally (index i in one log vs index i in the other) valid up to
-the first divergence -- which is exactly the point this module exists to
-find. Nothing here needs to re-derive alignment past that point; once a
-divergence is found, replay stops being trustworthy and the caller has
-its answer.
-
-One rule this depends on: no defect flag may change a character's speed.
-`scenarios.build_battle_state` reads defects only to decide the abilities
-on a character's kit (B08) and the tie-break order itself (B11) -- never
-speed -- so "same scenario + seed => same schedule" stays true regardless
-of which defects are on, and a schedule difference is always attributable
-to the run, never to an accident of construction.
-
-`replay()` drives a fresh BattleEngine by feeding it the ORIGINAL run's
-recorded actions in order, one per decision point the candidate engine
-raises. If the candidate needs a decision the original didn't record (or
-vice versa), the fed action will either be for the wrong actor -- caught
-by rules.check_legal as "not this actor's turn" -- or the lists will
-simply run out; either way `diverges()` still finds the true divergence
-at the correct earlier step, because up to that point both logs are
-byte-identical (same defects would have produced no divergence at all).
+Logs are compared by step index. That is valid up to the first divergence
+because each snapshot includes action_value, a superset of what the
+scheduler reads: equal snapshots mean the same next actor. This relies on
+no defect flag ever changing a character's speed.
 """
-from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from engine import rules
 from engine.defects import DefectFlags
@@ -94,10 +57,8 @@ def replay(
     defects: DefectFlags,
     actions: list[Action],
 ) -> ReplayResult:
-    """Drive a fresh BattleEngine under `defects`, feeding `actions` in
-    order to each decision point it raises. Stops early (without raising)
-    if a fed action turns out illegal under `defects`' semantics, or once
-    `actions` is exhausted."""
+    """Feed `actions` to a fresh engine under `defects`. Stops quietly on an
+    illegal action or when the actions run out."""
     engine = BattleEngine(scenario_id, seed, defects, turn_cap)
     consumed = 0
     stopped_reason: Optional[str] = None
@@ -143,12 +104,7 @@ def _diff_snapshot(
     if o.cooldowns != c.cooldowns:
         parts.append(f"cooldowns {o.cooldowns} != {c.cooldowns}")
     if abs(o.action_value - c.action_value) > FLOAT_TOL:
-        # In practice this never fires as the FIRST divergence: any real
-        # difference in a character's scheduling already shows up one step
-        # earlier as an actor_id mismatch (_diff_records checks that
-        # first). It is here so the module docstring's claim -- that the
-        # diffed snapshot is a superset of everything the scheduler reads
-        # -- is actually true, not just asserted.
+        # Rarely first: a scheduling difference usually shows as an actor_id mismatch.
         parts.append(f"action_value {o.action_value} != {c.action_value}")
 
     o_statuses = sorted(
@@ -197,11 +153,8 @@ def _diff_records(step: int, o: TurnRecord, c: TurnRecord) -> Optional[Divergenc
 
 
 def diverges(original_log: list[TurnRecord], candidate_log: list[TurnRecord]) -> Optional[DivergencePoint]:
-    """First point of disagreement between two TurnRecord logs, compared
-    positionally. Returns None if the shorter log's entries all agree
-    with the longer log's corresponding prefix AND the logs are the same
-    length; a length mismatch alone is reported as a "log_length"
-    divergence at the position where the shorter log ran out."""
+    """First disagreement between two logs by position, or None. A length
+    difference alone is a "log_length" divergence."""
     n = min(len(original_log), len(candidate_log))
     for i in range(n):
         d = _diff_records(i, original_log[i], candidate_log[i])
@@ -224,10 +177,7 @@ def replay_and_diff(
     original_log: list[TurnRecord],
     candidate_defects: DefectFlags,
 ) -> DifferentialResult:
-    """Replay `original_log`'s action sequence under `candidate_defects`
-    and diff the resulting trajectory against the original. A divergence
-    proves the original trace exercised behavior that `candidate_defects`
-    does not reproduce."""
+    """Replay the original actions under `candidate_defects` and diff the logs."""
     actions = extract_actions(original_log)
     result = replay(scenario_id, seed, turn_cap, candidate_defects, actions)
     divergence = diverges(original_log, result.log)

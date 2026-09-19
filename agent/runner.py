@@ -1,23 +1,9 @@
-"""Runs one episode: the per-turn loop around agent/inner_loop.py, with
-LLM-call gating and the ledger bookkeeping the planner and the eval rely on.
+"""Runs one episode with LLM-call gating and ledger bookkeeping.
 
-Gating: the model is only asked on INFORMATIVE turns -- a state signature
-never visited before, or a character the episode goal names as a focus.
-Every other turn takes a cheap scripted action (a seeded uniform choice
-among legal actions, so a replay is exact). Budgets across methods are
-matched on actions taken; LLM calls are reported separately.
-
-Bookkeeping, when a ledger is attached: every (state, action) visit, every
-new coverage combination, and every invariant violation -- recorded as a
-flag with source='invariant', deduplicated per episode by violation kind,
-so the ledger holds both detection channels side by side.
-
-Deliberately does NOT import engine.defects (see tests/test_no_bug_leakage.py):
-`defects` is passed straight through to BattleEngine as an opaque object,
-never introspected here. Omit it (or pass None) for clean mode -- that is
-BattleEngine's own default; only eval/ (outside agent/) constructs one.
+Gating: the model decides only on new state signatures or focus
+characters; other turns take a seeded random legal action. `defects` is
+passed to BattleEngine unopened.
 """
-from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
@@ -46,6 +32,7 @@ class EpisodeConfig(BaseModel):
     gating: bool = True
     max_decisions: int = 150
     window: int = DEFAULT_WINDOW
+    memory: bool = True  # False: the brief shows nothing read back from the ledger
 
 
 class Novelty(Protocol):
@@ -85,7 +72,9 @@ class EpisodeResult:
         return sum(d.get("llm_calls", 0) for d in self.decisions)
 
 
-class _Bookkeeper:
+class Bookkeeper:
+    """Records coverage and invariant flags to the ledger. Shared with baselines/."""
+
     def __init__(self, engine: BattleEngine, ledger: Optional[Ledger], episode_id: Optional[int]):
         self.engine = engine
         self.ledger = ledger
@@ -141,7 +130,7 @@ def run_episode(
 
     hypotheses: list[dict] = []
     confirmed: list[dict] = []
-    if ledger is not None:
+    if ledger is not None and config.memory:
         wanted = set(config.hypothesis_ids)
         hypotheses = [h for h in ledger.hypotheses() if h["id"] in wanted]
         confirmed = [h for h in ledger.hypotheses(("confirmed",)) if h["id"] not in wanted]
@@ -153,15 +142,13 @@ def run_episode(
         novelty = ledger if ledger is not None else MemoryNovelty()
     focus = set(config.focus_actor_ids)
     rng = random.Random(f"scripted:{config.scenario_id}:{config.seed}:{episode_id}")
-    bookkeeper = _Bookkeeper(engine, ledger, episode_id)
+    bookkeeper = Bookkeeper(engine, ledger, episode_id)
     bookkeeper.absorb(0)
 
     decisions: list[dict] = []
     usage = UsageStats()
     aborted: Optional[str] = None
-    # Every turn-slot from this step on is new to the model: it last looked
-    # at the battle when deciding the turn-slot at this step, before that
-    # turn-slot's own action had resolved.
+    # Slots from this step on are new to the model.
     audit_from = 0
 
     while not engine.state.finished and len(decisions) < config.max_decisions:
@@ -210,10 +197,7 @@ def run_episode(
 
 
 def decision_annotations(engine: BattleEngine, decisions: list[dict]) -> dict[int, dict]:
-    """Pairs each action-bearing TurnRecord in `engine.log` with the
-    decision that produced it, for the episode log / replay. run_episode
-    makes exactly one decision per action, in order, so an in-order zip is
-    exact without tracking log indices while the episode runs."""
+    """Match each action in the log to its decision (one per action, in order)."""
     extra: dict[int, dict] = {}
     it = iter(decisions)
     for i, record in enumerate(engine.log):

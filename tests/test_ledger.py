@@ -1,7 +1,6 @@
 """agent/ledger.py: schema, each table's API, the lossy state signature,
 coverage combos, and the planner digest -- including that grading-time
 columns never reach anything the agent reads."""
-from __future__ import annotations
 
 import json
 

@@ -1,8 +1,4 @@
-"""agent/runner.py, offline: gating, ledger bookkeeping, decision
-annotations for the episode log, and a clean abort when the spend cap is
-hit. Replay mode with an empty cassette makes every LLM decision fall back
-to the first legal action -- deterministic and free."""
-from __future__ import annotations
+"""agent/runner.py offline: gating, bookkeeping, annotations, spend-cap abort."""
 
 from engine.defects import single_flag
 from engine.engine import BattleEngine
@@ -38,9 +34,7 @@ def test_focus_characters_always_get_the_model(tmp_path):
     focused = run_episode(
         EpisodeConfig(scenario_id="S1", seed=1, turn_cap=3, focus_actor_ids=["p1"]), novelty=novelty, **_replay(tmp_path)
     )
-    # p1 need not be the first actor (scenarios carry varied speeds) -- but
-    # whichever decision is p1's must go to the model despite the state
-    # already being visited, since focus overrides novelty-gating.
+    # Focus characters go to the model even on visited states.
     p1_decision = next(d for d in focused.decisions if d["actor_id"] == "p1")
     assert p1_decision["mode"] == "fallback"
 

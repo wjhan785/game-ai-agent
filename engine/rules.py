@@ -1,19 +1,9 @@
-"""The legal-move checker: energy cost, cooldown, and valid targeting,
-enforced before anything is applied.
-
-This is deliberately the single choke point for "can this action happen at
-all." resolution.py calls `check_legal` before applying an action, and
-`list_legal_actions` (used by both the agent tool surface and the
-baselines) is built by filtering every (ability, target) combination
-through it. Nothing here decides whose turn it is or whether the actor is
-stunned -- that is resolution.py's job, one layer up.
-"""
-from __future__ import annotations
+"""Legal-move checker (energy, cooldown, targeting). The single place that
+decides whether an action is allowed."""
 
 from dataclasses import dataclass
 
-from engine.effects import get_status
-from engine.models import Action, Ability, BattleState, StatusType, TargetType
+from engine.models import Action, Ability, BattleState, TargetType
 
 
 @dataclass(frozen=True)

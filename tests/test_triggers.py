@@ -1,11 +1,5 @@
-"""oracle/triggers.py: leave-one-out trigger detection and one-step
-activity on traces from builds with several defects enabled at once.
-
-The strongest check here is agreement between the two procedures: they
-share no code path beyond the engine itself (one replays whole
-trajectories, the other re-runs single steps from logged state), so if
-they agree on the first step each defect acted, both are likely right."""
-from __future__ import annotations
+"""oracle/triggers.py: leave-one-out and one-step activity must agree on
+the first step each defect acted (they share no code beyond the engine)."""
 
 from engine.defects import ALL_DEFECT_IDS, DefectFlags, single_flag
 from engine.engine import BattleEngine

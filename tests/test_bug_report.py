@@ -1,6 +1,5 @@
 """eval/bug_report.py: flag triage on a hand-built grade, and a full report
 generated from a tiny offline campaign against the full build."""
-from __future__ import annotations
 
 import json
 from pathlib import Path

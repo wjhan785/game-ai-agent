@@ -1,14 +1,5 @@
-"""The action-value scheduler: determinism, the phase-1 equal-speed
-reproduction of the old fixed order, current_actor_id's tie-break,
-turn_forecast, and the new AV invariant.
-
-Real scenarios (S1-S6) carry varied per-character speeds by design (see
-engine/scenarios.py), so anything that needs a genuinely UNIFORM-speed
-battle -- to test the scheduler's tie-break mechanics in isolation, not
-any particular scenario's balance -- uses `uniform_speed_scenario`
-instead of a real scenario id.
-"""
-from __future__ import annotations
+"""The action-value scheduler: determinism, equal-speed order, tie-break,
+forecast and the AV invariant. Uses a uniform-speed scenario where needed."""
 
 import pytest
 
@@ -54,9 +45,7 @@ def _actor_sequence(scenario_id: str, seed: int, defects: DefectFlags, n: int) -
 
 
 def test_equal_speed_reproduces_the_old_fixed_interleave(uniform_speed_scenario):
-    # Phase 1's whole premise: at uniform speed, the scheduler reproduces
-    # the pre-scheduler fixed cycle exactly, cycle after cycle, not just
-    # for the opening tie.
+    # At uniform speed the order is the declared cycle, every cycle.
     actors = _actor_sequence(uniform_speed_scenario, seed=3, defects=DefectFlags(), n=18)
     assert actors == (OLD_FIXED_ORDER * 3)[: len(actors)]
 
@@ -90,9 +79,7 @@ def test_turn_forecast_excludes_the_dead():
 
 
 def test_round_number_matches_old_semantics_at_equal_speed(uniform_speed_scenario):
-    # Under the old fixed pointer, round_number was 0 for the whole first
-    # pass through all six characters and became 1 only once the fastest
-    # (tied) character came up a second time.
+    # Round 0 lasts until the first character comes up again.
     engine = BattleEngine(uniform_speed_scenario, seed=0, defects=DefectFlags())
     for i in range(6):
         assert engine.state.round_number == 0, i

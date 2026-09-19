@@ -1,8 +1,5 @@
-"""Golden tests: hand-calculated values against clean mode (DefectFlags(),
-all ten switches off). If these fail, the engine's basic semantics are
-wrong -- fix the engine, never the test.
-"""
-from __future__ import annotations
+"""Golden tests: hand-calculated values in clean mode. If these fail, fix
+the engine, not the test."""
 
 import sys
 from pathlib import Path
@@ -24,7 +21,6 @@ from engine.models import (
     Ability,
     Character,
     Element,
-    StatusEffect,
     StatusType,
     TargetType,
 )

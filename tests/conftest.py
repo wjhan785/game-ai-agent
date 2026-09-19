@@ -1,5 +1,4 @@
 """Shared test helpers and fixtures."""
-from __future__ import annotations
 
 import pytest
 
@@ -10,18 +9,8 @@ from engine import scenarios as scenarios_module
 
 
 def advance_to_actor(engine: BattleEngine, actor_id: str) -> None:
-    """Submits each intervening actor's first legal action until it is
-    `actor_id`'s turn. Scenarios carry varied per-character speeds (see
-    engine/scenarios.py), so a test that needs a SPECIFIC character's
-    turn -- regardless of whatever the scenario's own speed balance makes
-    that character's natural position -- drives forward to it this way
-    rather than assuming any particular actor goes first.
-
-    Only safe when no OTHER actor's filler action can disturb what the
-    test is about to check -- e.g. an enemy's first-legal Basic Attack
-    targets the first alive party member, which is often the very
-    character a test is trying to keep pristine (see
-    shield_test_scenario for the case where that matters)."""
+    """Play first-legal actions until it is `actor_id`'s turn. Only safe when
+    the filler actions can't disturb what the test checks."""
     while engine.state.current_actor_id() != actor_id:
         if engine.state.finished or not engine.legal_actions():
             raise AssertionError(f"battle ended or stuck before {actor_id!r}'s turn came up")
@@ -39,10 +28,8 @@ def _build_shield_test_scenario(seed, defects):
 
 @pytest.fixture
 def shield_test_scenario():
-    """A 1v1 -- Warden (Aegis Ward) vs a lone Fire attacker (Basic Attack
-    only) -- for tests that need an exact, undisturbed shield-absorption
-    figure: no other character exists to spend a filler turn hitting the
-    shield before the test's own explicit action does."""
+    """1v1 Warden vs a Fire attacker, for exact shield arithmetic with no
+    filler turns in between."""
     scenarios_module.SCENARIOS[SHIELD_TEST_SCENARIO_ID] = _build_shield_test_scenario
     try:
         yield SHIELD_TEST_SCENARIO_ID

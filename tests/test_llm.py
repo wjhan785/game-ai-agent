@@ -1,11 +1,5 @@
-"""Tests for agent/llm.py that don't touch the network: cost accounting,
-the peak-hour gate, the spend guard, cassette round-trip, tool-schema
-generation from a Pydantic model, and the structured-output validate
-path (exercised directly against a hand-built cassette, in "replay"
-mode -- see tests/test_llm_smoke.py for the one test that makes a real
-API call).
-"""
-from __future__ import annotations
+"""agent/llm.py offline: costs, peak gate, spend caps, cassettes, schemas
+and the validate/retry path."""
 
 import datetime
 import json
@@ -29,10 +23,7 @@ from agent.llm import (
 
 
 def test_compute_cost_matches_published_rate_card():
-    # 2000 cached prefix + 500 volatile miss + 80 output, per the project
-    # plan's own per-decision example. Derived from the rate card rather
-    # than pinned, so a price update doesn't need a matching test edit --
-    # what this checks is that each token count lands on the right rate.
+    # 2000 cached + 500 miss + 80 output, priced from the rate card.
     price = PRICE_PER_MTOK["off_peak"]
     expected = 2000 / 1e6 * price["cache_hit_in"] + 500 / 1e6 * price["cache_miss_in"] + 80 / 1e6 * price["out"]
     cost = compute_cost(cache_hit_tokens=2000, cache_miss_tokens=500, completion_tokens=80)
@@ -193,9 +184,7 @@ def test_call_with_tools_replay_mode_missing_cassette_entry_is_reported_not_rais
 
 
 def test_replay_walks_the_recorded_repair_path(tmp_path):
-    # Recorded run: first response fails validation (missing `note`), the
-    # repair turn succeeds. Replay must follow both entries, not stop at
-    # the first one.
+    # First response is invalid, the repair succeeds; replay must follow both.
     cassette = Cassette(dir_path=tmp_path)
     messages = [{"role": "user", "content": "call report"}]
     tools = [tool_schema("report", "Report status.", _Report)]

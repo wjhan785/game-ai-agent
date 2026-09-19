@@ -1,26 +1,8 @@
-"""The exploration ledger: the agent's external memory across episodes, in
-SQLite, so it survives outside any one context window and any one process.
+"""The ledger: the agent's external memory in SQLite.
 
-Five tables, per the project plan:
-  episodes    -- what was run, under which plan, what it cost, what came of it
-  hypotheses  -- concrete, testable suspicions and their current status
-  flags       -- every reported anomaly: the agent's own `flag_anomaly`
-                 calls (source='agent') and the invariant checker's
-                 violations (source='invariant'), side by side
-  visits      -- (state_sig, action_sig) pairs seen, for novelty gating
-  coverage    -- status-effect combinations seen, for the coverage curve
-                 and for pointing the planner at untested interaction seams
-
-`adjudication` and `bug_id` on `flags` are grading-time columns: nothing in
-the agent ever writes or reads them (every agent-facing read below selects
-explicit columns), and grading only happens after a sweep is finished.
-
-State signatures are deliberately LOSSY -- per character: alive, an HP
-bucket, an energy bucket, and the set of status types held (with a 1 / 2+
-stack bucket), plus whose turn it is. An exact signature would make every
-state unique and the visits table worthless for novelty.
+Tables: episodes, hypotheses, flags (agent and invariant), visits (for
+gating) and coverage. State signatures are lossy buckets so states repeat.
 """
-from __future__ import annotations
 
 import hashlib
 import itertools
@@ -129,11 +111,9 @@ def _status_set(snap: CharacterSnapshot) -> tuple[str, ...]:
 
 
 def record_coverage_combos(record: TurnRecord, ability_element: Optional[str]) -> set[str]:
-    """Coverage items one turn-slot exercised: every set of status types
-    simultaneously held by one character at either end of the turn-slot
-    (`set:burn+shield`), any status held as two or more instances at once
-    (`stack:burn`), plus the (applied status, ability element) pair if the
-    action applied a status (`pair:burn|fire`)."""
+    """Coverage items from one turn-slot: status sets held together
+    (`set:burn+shield`), stacked statuses (`stack:burn`), and applied
+    status x element (`pair:burn|fire`)."""
     combos: set[str] = set()
     for snap in list(record.before.values()) + list(record.after.values()):
         types = _status_set(snap)

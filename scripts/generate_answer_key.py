@@ -1,10 +1,8 @@
-"""Generates ANSWER_KEY.md from engine/defects.py, so the answer key can
-never drift from the code that actually implements it.
+"""Generates ANSWER_KEY.md from engine/defects.py.
 
 Usage:
     conda run -n learning python scripts/generate_answer_key.py
 """
-from __future__ import annotations
 
 import sys
 from pathlib import Path

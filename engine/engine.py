@@ -1,14 +1,5 @@
-"""BattleEngine: the facade the agent, baselines, and oracle all drive.
-
-reset / legal_actions / take_action / state / log -- that's the whole
-public surface. Internally it stitches together rules.py's legal-move
-checker and resolution.py's three-phase pipeline into a single loop that
-auto-resolves any turn-slot that doesn't need a real decision (a dead
-character's turn, a stunned character's turn, or -- defect B08 -- an
-enemy with zero affordable, off-cooldown abilities and no fallback), so
-callers only ever see turns where a choice actually matters.
-"""
-from __future__ import annotations
+"""BattleEngine: the facade everything drives. Turn-slots that need no
+decision (dead, stunned, no legal action) resolve automatically."""
 
 from engine import invariants, resolution, rules, scenarios
 from engine.defects import DefectFlags
@@ -56,10 +47,7 @@ class BattleEngine:
         return list(self._pending_legal)
 
     def pending_record(self) -> resolution.TurnRecord | None:
-        """The pending decision's turn-slot as resolved so far (start-of-turn
-        ticks, energy regen, the pre-tick snapshot) -- a copy, so callers
-        can't reach into the engine's bookkeeping. None if no decision is
-        pending."""
+        """A copy of the pending turn-slot resolved so far, or None."""
         if self._pending_record is None:
             return None
         return self._pending_record.model_copy(deep=True)
@@ -85,16 +73,9 @@ class BattleEngine:
     def _advance_to_decision(self) -> None:
         while not self.state.finished:
             record = resolution.resolve_pre(self.state, self.defects)
-            # A DoT tick during resolve_pre can end the battle before any
-            # action is even considered (e.g. it kills the last enemy) --
-            # check immediately rather than waiting for resolve_post,
-            # or we'd wrongly treat this as a pending decision.
+            # A tick can end the battle before any action.
             resolution.check_battle_end(self.state)
             if self.state.finished and record.needs_action():
-                # The turn-slot's pre-phase ran, but the battle ended
-                # before an action could be taken this "turn" -- there is
-                # nothing left to decide or finalize downstream, so just
-                # record it as a no-op skip for logging purposes.
                 record.skipped_reason = "battle_ended"
                 self.log.append(record)
                 return

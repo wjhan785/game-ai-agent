@@ -1,10 +1,4 @@
-"""Elemental advantage triangle: Fire > Ice > Lightning > Fire.
-
-Neutral is always x1.0 both attacking and defending. This is the ONLY
-place elemental multipliers are computed -- see the docstring on
-apply_damage_modifiers in effects.py for why that matters (defect B09).
-"""
-from __future__ import annotations
+"""Elements: Fire > Ice > Lightning > Fire. Neutral is always x1.0."""
 
 from engine.models import Element
 

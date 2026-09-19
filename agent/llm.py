@@ -1,26 +1,10 @@
-"""LLM provider layer: an OpenAI-SDK-compatible client pointed at
-DeepSeek, structured tool-call output with validate/retry, token + cost
-accounting (cache-hit aware), a spend budget guard, an off-peak gate, and
-cassette record/replay for zero-cost offline development.
+"""DeepSeek via the OpenAI SDK: forced tool calls with validate/retry,
+cache-aware cost accounting, spend caps, an off-peak gate, and cassette
+record/replay.
 
-Model tiering is a config field, not a hardcoded choice: `ROLE_CONFIGS`
-maps `"inner"` and `"outer"` to a `RoleConfig`, so swapping models per
-loop is a one-line edit -- but per the project's constraints, both roles
-ship pointing at the same model, and every reported number uses that one
-configuration.
-
-Request layout is a hard constraint, not a suggestion: DeepSeek caches
-shared PREFIXES automatically, and a cache hit is roughly 50x cheaper
-than a miss at the current rate card (see PRICE_PER_MTOK below). Callers must put stable content
-first in `messages` (system prompt, tool definitions, scenario rules,
-episode goal) and volatile content last (current state, legal actions,
-recent diffs) -- this module does not enforce that ordering, since it
-doesn't own prompt construction, but `call_with_tools`'s cache-hit-rate
-reporting exists specifically so a caller can catch a silent prefix
-invalidator (a timestamp, an unsorted dict, nondeterministic set order)
-before it quietly multiplies the input bill on a real sweep.
+DeepSeek caches shared prefixes (hits are far cheaper), so callers put
+stable content first and volatile content last.
 """
-from __future__ import annotations
 
 import datetime
 import hashlib
@@ -64,17 +48,12 @@ def get_client(role_config: RoleConfig) -> OpenAI:
 
 # --- Pricing, off-peak gate ------------------------------------------------
 
-# Per-million-token, USD. Off-peak is the assumed operating mode; the
-# peak column exists only so a cost PROJECTION can be reported alongside
-# the measured off-peak number, per the project plan -- it is never used
-# to price an actual call unless --allow-peak was explicitly passed.
+# USD per million tokens. Peak prices apply only with --allow-peak.
 PRICE_PER_MTOK = {
     "off_peak": {"cache_hit_in": 0.003, "cache_miss_in": 0.15, "out": 0.6},
 }
 
-# Peak hours, UTC, weekdays: 01:00-04:00 and 06:00-10:00 = 09:00-12:00
-# and 14:00-18:00 SGT. Sweeps must not run in these windows without
-# --allow-peak (see check_not_peak below).
+# Peak hours, UTC weekdays (09:00-12:00 and 14:00-18:00 SGT).
 PEAK_WINDOWS_UTC = [(1, 4), (6, 10)]
 
 
@@ -121,15 +100,9 @@ HARD_CEILING_USD = 15.0
 
 
 class SpendTracker:
-    """Persists cumulative spend to `path` (default results/spend.json,
-    gitignored) so caps hold across process restarts, not just within one
-    run. Three independent caps, any of which stops the next call:
-      - `hard_ceiling`: the project's total budget, always enforced.
-      - `max_spend`: a cumulative (all-time) ceiling.
-      - `max_session_spend`: spend since THIS tracker was created -- what
-        an entry point's `--max-spend` means, so a phase allocation ("the
-        pilot may spend $0.75") doesn't depend on what earlier phases cost.
-    """
+    """Cumulative spend, persisted to results/spend.json. Caps: `hard_ceiling`
+    (project total), `max_spend` (all-time), `max_session_spend` (this
+    tracker only; what --max-spend sets)."""
 
     def __init__(
         self,
@@ -185,16 +158,8 @@ class SpendTracker:
 
 
 class Cassette:
-    """Deterministic on-disk request/response recording for offline
-    development, keyed by a hash of the request BODY (model, messages,
-    tools, temperature) -- not call order, so repeated identical calls
-    replay the same response regardless of when they happen.
-
-    This stores only SDK-level request/response bodies, never HTTP
-    headers -- the Authorization header carrying the API key is never
-    part of either body, so there is nothing to strip: a cassette built
-    this way cannot contain the key by construction.
-    """
+    """Request/response recordings keyed by a hash of the request body.
+    Stores bodies only, never headers, so the API key can't end up here."""
 
     def __init__(self, dir_path: str | Path = "fixtures"):
         self.dir_path = Path(dir_path)
@@ -270,13 +235,7 @@ def _request_body(
         "tool_choice": "required",
         "parallel_tool_calls": False,
         "temperature": temperature,
-        # DeepSeek's "thinking mode" is enabled by default and does not
-        # support tool_choice="required" (confirmed against the live API:
-        # a 400 "Thinking mode does not support this tool_choice"). The
-        # inner/outer loops both need a forced, single tool call every
-        # turn, so thinking mode is switched off here rather than
-        # loosening tool_choice to "auto" -- see agent/llm.py's smoke
-        # test, which is what caught this.
+        # Thinking mode rejects tool_choice="required", so turn it off.
         "thinking": {"type": "disabled"},
     }
 
@@ -316,17 +275,9 @@ def call_with_tools(
     temperature: float = 0.2,
     allow_peak: bool = False,
 ) -> CallResult:
-    """One tool-calling round trip, with up to `max_retries` structured-
-    output repair attempts. `messages` is mutated in place across retries
-    (the assistant's malformed call and the validation-error feedback are
-    appended), mirroring a real multi-turn repair conversation -- this is
-    deliberate: it is what the model actually sees.
-
-    On success: `CallResult.ok=True`, `tool_name` and `args` set.
-    On exhausted retries: `ok=False`, `malformed=True`, a no-op is the
-    caller's responsibility (this function does not choose one -- it just
-    reports the failure so it becomes a metric, not a crash).
-    """
+    """One forced tool call, with up to `max_retries` repair attempts.
+    Retries append the bad call and the error to `messages` in place.
+    On failure returns ok=False, malformed=True; the caller picks a fallback."""
     role_config = ROLE_CONFIGS[role]
     if mode == "replay" and cassette is None:
         raise ValueError("mode='replay' requires a cassette")
@@ -337,9 +288,7 @@ def call_with_tools(
     retries_used = 0
     total_usage = UsageStats()
 
-    # One loop for every mode, so a replay walks the exact repair path the
-    # recorded run took (each retry is its own cassette entry, keyed by
-    # the grown message list) instead of stopping at the first response.
+    # Same loop in every mode, so replay follows the recorded retries.
     while True:
         request = _request_body(role_config, messages, tools, temperature)
         if mode == "replay":
@@ -505,10 +454,7 @@ class SmokeReport(BaseModel):
 
 
 def run_smoke_test(allow_peak: bool = False) -> CallResult:
-    """One tool-calling round trip against DeepSeek: proves the model
-    name in ROLE_CONFIGS is authorised by DEEPSEEK_API_KEY, that
-    structured tool-call parsing works, and that cost accounting is
-    wired -- before any bulk spend happens."""
+    """One live tool call: checks the key, model, parsing and cost accounting."""
     messages = [
         {
             "role": "system",

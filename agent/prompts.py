@@ -1,22 +1,8 @@
-"""What the model sees: the rules specification, roster formatting, and
-compact per-turn observations, shared by the inner (tactical) and outer
-(planning) loops.
+"""What the model sees: the rules spec, rosters, and compact observations.
 
-RULES_SPEC is the game's design specification -- the document a QA tester
-tests against. It describes every mechanic at the same level of detail
-(the plan's engine specification plus the fixed turn pipeline), because a
-spec that went quiet on some mechanics would make those untestable by
-reasoning, and one that dwelt on some would be steering. Everything the
-agent reports is a claim that observed behavior contradicts this text or
-an ability's declared data.
-
-Observations pair DECLARED numbers (an ability's power and element, a
-status's magnitude) with OBSERVED ones (HP deltas, tick amounts, the
-statuses actually present). The arithmetic of differencing is done here;
-judging whether a difference is legitimate (Weaken, Shield, a death) or a
-contradiction is the model's job.
+RULES_SPEC covers every mechanic at equal depth so none is singled out.
+Observations pair declared numbers with observed ones; the model judges.
 """
-from __future__ import annotations
 
 import json
 from typing import Optional
@@ -211,11 +197,8 @@ MAX_NEW_EVENTS = 12
 def recent_events(
     log: list[TurnRecord], state: BattleState, window: int, audit_from: Optional[int] = None
 ) -> list[dict]:
-    """The last `window` informative turn-slots -- extended, if needed, to
-    every turn-slot from step `audit_from` on (up to MAX_NEW_EVENTS), each
-    marked `"new": true`, so nothing played since the model last decided
-    goes unseen. A dead character's skipped turn carries nothing unless the
-    invariant checker objected to it."""
+    """The last `window` turn-slots, extended to cover every slot since
+    `audit_from` (marked "new") so nothing goes unseen."""
     kept = [r for r in log if r.skipped_reason != "dead" or r.invariant_violations]
     shown = kept[-window:]
     if audit_from is not None:

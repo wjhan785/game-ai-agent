@@ -1,38 +1,20 @@
-"""The fixed turn-resolution pipeline.
+"""The turn pipeline. This order is the spec; most defects break it.
 
-This is the spec. Most of the ten seeded defects are violations of this
-exact ordering, so the ordering is written down once, here, and every
-other module defers to it.
+Per turn-slot:
+  1. Dead check      dead characters are skipped.
+  2. DoT/HoT tick    Poison, then Burn, then Regen.
+  3. Death check     a tick can kill.
+  4. Energy regen    reduced by Chill, clamped.
+  5. Stun check      a stunned turn skips to step 7.
+  6. Action          legal-move check against cooldowns as they stood
+                     before this turn's decrement.
+  7. End of turn     decrement cooldowns and status durations, then
+                     advance the scheduler.
+Invariants are checked afterwards by engine.py.
 
-Per character turn-slot, in order:
-
-  1. Dead check       -- a dead character's turn-slot is skipped entirely.
-  2. DoT/HoT tick      -- Poison, then Burn, then Regen. Fixed order.
-  3. Death check       -- a DoT tick can kill; re-check before energy regen.
-  4. Energy regen      -- reduced by Chill, clamped (defect B03 removes
-                           the clamp).
-  5. Stun check        -- if stunned, this turn-slot is consumed and
-                           resolution jumps straight to end-of-turn
-                           bookkeeping; no action is possible.
-  6. Legal-move check + action -- evaluated against cooldowns as they
-                           stood since the end of the actor's last turn
-                           (i.e. BEFORE this turn's cooldown decrement,
-                           which happens in step 8). Defect B06 moves the
-                           decrement to before this check instead.
-  8. End-of-turn        -- decrement cooldowns (unless B06 already did it
-                           in step 6's place), decrement status durations,
-                           drop expired effects.
-  9. Invariant check    -- performed one layer up, by engine.py, against
-                           the TurnRecord this module returns.
-
-The pipeline is split into three functions -- `resolve_pre`, `resolve_
-action`, `resolve_post` -- rather than one, because whether an action is
-even needed (steps 1-5) can only be known after running the dead/stun
-checks, and the caller (engine.BattleEngine) needs to ask an agent for a
-decision in between. See engine.py's `advance_to_decision` for how the
-three are stitched into one turn.
+Split into resolve_pre / resolve_action / resolve_post so the engine can
+ask for a decision between steps 5 and 6.
 """
-from __future__ import annotations
 
 from typing import Optional
 
@@ -48,7 +30,6 @@ from engine.effects import (
     decrement_cooldowns,
     decrement_status_durations,
     get_status,
-    has_status,
     tick_burn,
     tick_poison,
     tick_regen,
@@ -100,7 +81,7 @@ class TurnRecord(BaseModel):
     step_count: int
     round_number: int
     actor_id: str
-    elapsed_av: float  # the scheduler clock at the top of this turn-slot -- equals before[actor_id].action_value
+    elapsed_av: float  # scheduler clock at the start of this turn-slot
     skipped_reason: Optional[str] = None  # "dead" | "stunned" | "no_legal_actions"
     action: Optional[Action] = None
     dot_hot_damage: dict[str, dict[str, float]] = Field(default_factory=dict)
@@ -120,8 +101,7 @@ def _snapshot_all(state: BattleState) -> dict[str, CharacterSnapshot]:
 
 
 def resolve_pre(state: BattleState, defects: DefectFlags) -> TurnRecord:
-    """Steps 1-5. Returns a TurnRecord; `needs_action()` tells the caller
-    whether to collect a decision before calling resolve_action."""
+    """Steps 1-5. `record.needs_action()` says whether a decision is needed."""
     actor_id = state.current_actor_id()
     actor = state.characters[actor_id]
     record = TurnRecord(
@@ -136,12 +116,6 @@ def resolve_pre(state: BattleState, defects: DefectFlags) -> TurnRecord:
         record.skipped_reason = "dead"
         return record
 
-    # Defect B06 only: an EXTRA cooldown decrement at the top of the turn,
-    # ahead of the legal-move check that resolve_action's caller runs
-    # between resolve_pre and resolve_action -- on top of, not instead of,
-    # the one resolve_post always applies at the end. See resolve_post's
-    # docstring for why a double decrement is the realistic shape of this
-    # bug.
     apply_pre_check_cooldown_decrement(state, defects)
 
     # Step 2: DoT/HoT, fixed order Poison -> Burn -> Regen.
@@ -156,19 +130,11 @@ def resolve_pre(state: BattleState, defects: DefectFlags) -> TurnRecord:
         clear_statuses_on_death(actor, defects)
         record.deaths.append(actor_id)
 
-    # Regen ticks after the death check -- defect B07 is precisely about
-    # this ordering not being enough, because Regen may have been left on
-    # a character who died in an EARLIER turn and was since revived.
+    # Regen after the death check; the dead are never healed.
     if actor.alive:
         regen_healed = tick_regen(actor)
         if regen_healed:
             record.dot_hot_damage.setdefault(actor_id, {})["regen"] = regen_healed
-    elif defects.regen_survives_death and has_status(actor, StatusType.REGEN):
-        # Defect: a dead character's stale Regen would still be present
-        # (clear_statuses_on_death spared it), but a dead character cannot
-        # be healed -- the bug surfaces on revive, not here. No-op by
-        # design; this branch exists only to document why we do nothing.
-        pass
 
     if not actor.alive:
         record.skipped_reason = "dead"
@@ -196,8 +162,6 @@ def _resolve_ability_effect(
     assert ability is not None
 
     actor.energy -= ability.energy_cost
-    # Cooldown is set on use unconditionally; the decrement clock (steps
-    # further along, per-turn) is what defect B06 mis-orders, not this.
     if ability.cooldown > 0:
         actor.cooldowns[ability.name] = ability.cooldown
 
@@ -224,18 +188,14 @@ def _resolve_ability_effect(
         if ability.base_power > 0:
             raw = ability.base_power
             if defects.elemental_multiplier_applied_twice:
-                # Defect B09: the ability's own calculation ALSO folds in
-                # elemental advantage before the general modifier pass
-                # (apply_damage_modifiers) applies it again below.
+                # B09: multiplier here too, then again in apply_damage_modifiers.
                 raw = raw * elemental_multiplier(ability.element, target.element)
             damage = apply_damage_modifiers(ability, actor, target, raw)
             pre_shield = damage
             damage = apply_shield_absorption(target, damage, defects)
             target.hp = max(0.0, target.hp - damage)
             record.per_target_damage[target_id] = damage
-            # Measured across the absorption call itself -- comparing against
-            # base_power would misreport elemental disadvantage or Weaken as
-            # shield absorption on a target with no shield at all.
+            # Measured across the absorption call, not against base_power.
             absorbed = pre_shield - damage
             if absorbed > 0:
                 record.per_target_shield_absorbed[target_id] = absorbed
@@ -245,10 +205,7 @@ def _resolve_ability_effect(
                 clear_statuses_on_death(target, defects)
 
         if ability.applies is not None and target.alive:
-            # Guard against re-attaching a status to a target this same
-            # ability just killed (e.g. Cinder Burn: damage + Burn in one
-            # cast) -- a dead target has already had its statuses cleared
-            # by clear_statuses_on_death above and must stay clear.
+            # Don't re-attach a status to a target this hit just killed.
             apply_status(
                 target,
                 ability.applies.status_type,
@@ -274,34 +231,14 @@ def resolve_action(
 
 
 def resolve_post(state: BattleState, defects: DefectFlags, record: TurnRecord) -> None:
-    """Step 8 (end-of-turn bookkeeping) plus advancing the scheduler.
-
-    Cooldowns are always decremented here, once per own-turn, after the
-    legal-move check for this turn's action has already run. Defect B06
-    (cooldown_decrement_before_check) does NOT move this decrement away --
-    it adds a SECOND one earlier in the pipeline (see
-    apply_pre_check_cooldown_decrement, called from resolve_pre, before
-    the legal-move check). That is what actually happens in real code: a
-    decrement call gets added at the top of the turn during a refactor and
-    the original one at the bottom is never removed. The result is a
-    cooldown that drains twice as fast as intended, so a 2-turn cooldown
-    ability becomes usable after just 1 of the actor's own turns.
-    """
+    """Step 7: end-of-turn bookkeeping, then advance the scheduler."""
     actor = state.characters[record.actor_id]
     if actor.alive:
         decrement_cooldowns(actor)
     if actor.alive:
         decrement_status_durations(actor, defects)
 
-    # Advance the scheduler: this turn-slot's actor is rescheduled one full
-    # personal cycle after the clock reading that selected them
-    # (state.elapsed_av, which equals their own pre-advance action_value)
-    # -- unconditionally, whether they acted, were skipped for being dead
-    # or stunned, or had no legal action, exactly as the old fixed pointer
-    # advanced for every turn-slot regardless of skip reason. Snapshotting
-    # `after` AFTER this bump means it reflects "when this character will
-    # next be up", the same forward-looking sense as its decremented
-    # cooldowns and statuses above.
+    # Reschedule the actor one personal cycle later, even if it was skipped.
     actor.action_value = state.elapsed_av + BASE_ACTION_VALUE / actor.speed
 
     record.after = _snapshot_all(state)
@@ -314,9 +251,8 @@ def resolve_post(state: BattleState, defects: DefectFlags, record: TurnRecord) -
 
 
 def apply_pre_check_cooldown_decrement(state: BattleState, defects: DefectFlags) -> None:
-    """Called from resolve_pre, ONLY when defect B06 is enabled, to apply
-    an EXTRA cooldown decrement ahead of the legal-move check for this
-    same turn -- resolve_post's own decrement still runs too."""
+    """B06: an extra cooldown decrement before the legal-move check, on top
+    of resolve_post's own, so cooldowns drain twice per turn."""
     if defects.cooldown_decrement_before_check:
         actor = state.characters[state.current_actor_id()]
         if actor.alive:

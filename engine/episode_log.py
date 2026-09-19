@@ -1,23 +1,5 @@
-"""Episode JSONL logging: serialize a completed (or in-progress) episode
-to a JSON-Lines file, and read it back.
-
-One file, three kinds of line, one JSON object per line:
-  1. exactly one "header" line -- run metadata (method, scenario_id, seed,
-     defects enabled) plus the full initial BattleState (so ability
-     tooltips, element, cooldowns, etc. are available to a reader without
-     re-running the engine).
-  2. one "turn" line per TurnRecord in engine.log, in order.
-  3. exactly one "footer" line -- whether the battle finished and how.
-
-This format, not a single JSON document, is deliberate: a crash mid-sweep
-leaves every completed line intact and readable, and eval/harness.py can
-append lines as an episode runs rather than buffering the whole thing in
-memory. Consumers (replay/generate.py, eval/harness.py) read this back as
-plain dicts, not re-parsed into TurnRecord/BattleState -- a reader may
-only need a handful of fields and shouldn't have to satisfy every
-required field of those models against an older or hand-trimmed log.
-"""
-from __future__ import annotations
+"""Episode JSONL: one header line (run metadata + initial state), one line
+per turn, one footer line. Read back as plain dicts."""
 
 import json
 from pathlib import Path
@@ -33,15 +15,8 @@ def write_episode_jsonl(
     method: str,
     extra_by_index: dict[int, dict] | None = None,
 ) -> None:
-    """Write `engine`'s full log (and `initial_state`, captured right
-    after reset() -- BEFORE any turns ran) to `path` as episode JSONL.
-
-    `extra_by_index` merges caller-supplied fields into specific turn
-    lines by their position in `engine.log` -- e.g. agent/runner.py
-    attaches the agent's own stated reasoning for each decision this way,
-    without this module (shared by any method, including non-agent
-    baselines) needing to know that concept exists.
-    """
+    """Write the engine's log to `path`. `extra_by_index` adds fields to
+    turn lines by their index in engine.log (e.g. the agent's reasoning)."""
     extra_by_index = extra_by_index or {}
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

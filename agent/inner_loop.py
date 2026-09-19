@@ -1,22 +1,10 @@
-"""The inner (per-turn) tactical loop: decide one character's turn toward
-the current episode goal, and flag anything that contradicts the rules.
+"""Inner loop: decide one turn toward the episode goal and flag anything
+that contradicts the rules.
 
-Request layout is ordered for DeepSeek's automatic prefix caching:
-  1. SYSTEM_PROMPT        -- identical on every inner call in every episode
-  2. episode brief        -- identical on every call within one episode
-                             (roster with declared ability data, goal,
-                             hypotheses under test, focus characters)
-  3. turn context         -- volatile: a bounded window of recent turn-slots,
-                             this turn so far, current state, legal actions
-The window is bounded so the volatile tail never grows with episode
-length, and nothing in 1-2 varies call to call (no timestamps, no
-unordered iteration).
-
-`get_state`/`list_legal_actions` are not offered as tools: their output
-goes straight into the turn context. A turn may call `flag_anomaly` and
-`ledger_write` before it must call `take_action` to submit the decision.
+Prompt order suits prefix caching: system prompt (fixed), episode brief
+(fixed per episode), then the turn context (bounded window, state, legal
+actions). A turn may flag or write hypotheses before its take_action.
 """
-from __future__ import annotations
 
 import json
 from typing import Optional
@@ -188,9 +176,7 @@ def decide_and_act(
             )
             break
 
-        # Continue the conversation: echo the assistant's tool call, then
-        # its result, and ask again -- this is how one turn can flag an
-        # anomaly (or retry an illegal action) and still submit a decision.
+        # Echo the call and its result, then ask again for take_action.
         messages.append(
             {
                 "role": "assistant",
@@ -214,9 +200,7 @@ def decide_and_act(
 
     fell_back = False
     if take_action_result is None:
-        # Exhausted attempts without a successful take_action -- fall back
-        # to the first legal option so the episode keeps moving. This is
-        # a reported metric (fell_back_to_first_legal), not a crash.
+        # No valid take_action: play the first legal option (a reported metric).
         fell_back = True
         reasoning = "fallback: exhausted tool-call attempts this decision"
         options = dispatcher.list_legal_actions()["options"]

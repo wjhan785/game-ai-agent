@@ -1,30 +1,12 @@
-"""Tool surface for both loops.
+"""Tool surface, kept flat.
 
-Small and flat by design -- third-party OpenAI-compatible tool calling
-degrades on deeply nested schemas.
+  inner:        take_action, flag_anomaly, ledger_write
+  planner:      ledger_read, ledger_write, reset_episode
+  final review: ledger_read, ledger_write, end_session
 
-  inner (per turn):   take_action, flag_anomaly, ledger_write
-  outer (per episode): ledger_read, ledger_write, reset_episode
-  final review:        ledger_read, ledger_write, end_session
-
-`get_state` and `list_legal_actions` exist as dispatcher methods but are
-not offered to the model: their output is deterministic and needed every
-decision, so agent/inner_loop.py puts it in the prompt directly rather
-than spending an LLM round trip to fetch it.
-
-`take_action` returns a precomputed DIFF, not a new state dump -- the
-engine does the arithmetic, the model does the judgment. Each per-target
-line pairs the ability's own DECLARED numbers (base_power, element) with
-the OBSERVED damage the engine actually applied, so the model can catch a
-mismatch between what an ability's tooltip promises and what it actually
-did by comparing two numbers it's handed, not by re-deriving the engine's
-own math.
-
-`flag_anomaly` auto-attaches reproduction: the scenario, seed, round cap
-and every action taken so far, written next to the ledger, so any flag can
-be replayed to the exact state it was raised in.
+take_action returns a diff pairing declared numbers with observed ones.
+flag_anomaly saves a reproduction file (scenario, seed, actions so far).
 """
-from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -213,13 +195,8 @@ def ledger_write(
 
 
 class ToolDispatcher:
-    """Wraps one BattleEngine, exposing the inner-loop tool surface and a
-    generic `dispatch(name, args_dict) -> dict` entry point that consumes
-    an agent.llm.CallResult's parsed args directly.
-
-    With a ledger attached, `flag_anomaly` persists the flag (plus a
-    reproduction file under `flags_dir`) and `ledger_write` is live;
-    without one, flags are kept in memory only (`self.flags`)."""
+    """Runs tool calls against one BattleEngine. With a ledger, flags and
+    hypotheses are persisted; without one, flags stay in `self.flags`."""
 
     def __init__(
         self,

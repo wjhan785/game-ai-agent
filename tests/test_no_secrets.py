@@ -1,13 +1,5 @@
-"""Secret-hygiene guard (see the project plan's "Secret hygiene" section).
-
-Scans the working tree -- excluding .git, .env itself, and other
-gitignored paths -- for anything shaped like a DeepSeek API key, and
-separately checks that if DEEPSEEK_API_KEY is set in the environment
-right now, its literal value doesn't appear anywhere in tracked-shaped
-files either. This is the automated backstop; the pre-commit hook
-(scripts/install-hooks.sh) is the one that actually blocks a commit.
-"""
-from __future__ import annotations
+"""Scans the tree (minus .git, .env and ignored paths) for key-shaped
+strings and the live key's value. The pre-commit hook blocks commits."""
 
 import os
 import re
@@ -18,10 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# DeepSeek (and most OpenAI-compatible) API keys are "sk-" followed by a
-# long alphanumeric token. This is intentionally broad -- false positives
-# here just mean double-checking a file, which is cheap; a false negative
-# is the failure mode that actually matters.
+# "sk-" plus a long token. Deliberately broad.
 KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
 
 EXCLUDED_DIR_NAMES = {".git", "__pycache__", ".pytest_cache", "fixtures", "results", "logs", "replay"}

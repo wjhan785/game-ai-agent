@@ -1,10 +1,5 @@
-"""One test per seeded defect: enabling exactly that flag (via
-engine.defects.single_flag) changes the trajectory relative to clean mode,
-and in the direction ANSWER_KEY.md/defects.py documents. Enabling no flags
-must reproduce the golden trace exactly -- test_engine_golden.py already
-covers that; this file is the other half of the ablation.
-"""
-from __future__ import annotations
+"""One test per defect: enabling only that flag changes behaviour in the
+documented direction."""
 
 import sys
 from pathlib import Path
@@ -129,9 +124,7 @@ def test_b06_cooldown_fires_one_turn_early_when_flagged():
                     names = {a.ability_name for a in legal}
                     action = next(a for a in legal if a.ability_name == "Big Hit") if "Big Hit" in names else next(a for a in legal if a.actor_id == "atk")
                     rec = eng.take_action(action)
-                    # rec.before is the snapshot taken at the very top of
-                    # resolve_pre, before B06's extra decrement -- the
-                    # "true" cooldown this turn started with.
+                    # rec.before is taken before B06's extra decrement.
                     before_cd = rec.before["atk"].cooldowns.get("Big Hit", 0)
                     if rec.action.ability_name == "Big Hit" and before_cd > 0:
                         reused_while_on_cooldown = True
@@ -186,10 +179,8 @@ def test_b08_enemy_without_fallback_gets_permanently_stuck():
     eng_buggy = BattleEngine("S5", seed=1, defects=single_flag("B08"), turn_cap=30)
 
     def overtuned_legal_ever(eng):
-        # Overtuned's only non-basic ability costs 999 energy, which it can
-        # never afford. Clean mode still lists Basic Attack; buggy mode
-        # (B08) strips it, so Overtuned should have zero legal actions
-        # every time it's up, and the no-progress detector should fire.
+        # Overtuned can't afford its only ability; without Basic Attack
+        # it has no legal actions and the no-progress detector fires.
         for _ in range(60):
             legal = eng.legal_actions()
             if eng.state.finished:
@@ -258,10 +249,7 @@ def test_b10_zero_shield_persists_when_flagged():
 # --- B11: turn-order ties broken by character id, not declared order ----
 
 def test_b11_tie_break_uses_character_id_when_flagged():
-    # Real scenarios carry varied per-character speeds by design (see
-    # scenarios.py), so this needs a scenario where every character is at
-    # the same speed -- a full six-way tie at battle start -- to isolate
-    # the tie-break rule itself from any scenario's own speed balance.
+    # Uniform speed gives a six-way tie at the start, isolating the tie-break.
     def uniform_speed(seed, defects):
         from engine.content import make_character
 

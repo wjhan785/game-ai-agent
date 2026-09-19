@@ -1,18 +1,6 @@
-"""Methodological guard: the agent and both baselines must never be able
-to see which bugs were seeded. This is the automated half of the
-"scenarios and agent strategy were built independently of the answer key"
-claim in the project write-up -- the other half is git history itself
-(docs/scenario-matrix.md predates engine/defects.py; check the log).
-
-Two checks:
-  1. No file under agent/ or baselines/ imports engine.defects or
-     anything from oracle/ (the oracle is a grading-time-only tool).
-  2. No file under agent/ or baselines/ contains defect-identifying
-     vocabulary -- the ANSWER_KEY bug IDs, or the DefectFlags field names
-     themselves -- anywhere in source, including string literals (which
-     covers prompt templates).
-"""
-from __future__ import annotations
+"""Guard: agent/, baselines/ and enemy_ai/ must not know the seeded bugs.
+They may not import engine.defects or oracle/, nor mention a defect ID or
+flag name anywhere, including prompt strings."""
 
 import ast
 import re
@@ -24,12 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from engine.defects import ALL_DEFECT_IDS
 
 ROOT = Path(__file__).resolve().parents[1]
-FORBIDDEN_SOURCE_ROOTS = ["agent", "baselines"]
+FORBIDDEN_SOURCE_ROOTS = ["agent", "baselines", "enemy_ai"]
 FORBIDDEN_IMPORT_MODULES = ("engine.defects", "oracle")
 
-# Every bug ID (B01..B10) and every DefectFlags field name -- if any of
-# these literally appear in agent or baseline source, something is
-# leaking answer-key vocabulary into a place that must stay blind to it.
+# Every defect ID and DefectFlags field name.
 FORBIDDEN_TOKENS = set(ALL_DEFECT_IDS.keys()) | set(ALL_DEFECT_IDS.values())
 _TOKEN_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(t) for t in FORBIDDEN_TOKENS) + r")\b"
@@ -77,11 +63,8 @@ def test_no_defect_vocabulary_in_agent_or_baseline_source():
 
 
 def test_scenario_matrix_committed_before_defects_in_git_history():
-    """The audit-trail half of the guard: docs/scenario-matrix.md's first
-    commit must predate engine/defects.py's first commit. Skips quietly
-    if git history isn't available (e.g. a fresh checkout without a .git
-    directory, or the file's history was squashed) rather than failing --
-    this is a nice-to-have provenance check, not a correctness check."""
+    """docs/scenario-matrix.md must be committed before engine/defects.py.
+    Skips if git history isn't available."""
     import subprocess
 
     def first_commit_date(relpath: str) -> str | None:

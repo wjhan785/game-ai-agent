@@ -1,8 +1,4 @@
-"""agent/inner_loop.py, entirely offline via cassette "replay" mode. Cassette
-entries are keyed on the exact request bodies decide_and_act builds (same
-build_messages, same agent.llm._request_body), so these exercise the real
-request/response wiring, not a mock of it."""
-from __future__ import annotations
+"""agent/inner_loop.py offline, via cassettes keyed on the real requests."""
 
 import json
 

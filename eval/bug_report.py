@@ -1,31 +1,13 @@
-"""The bug report for a campaign run: everything the agent flagged, with
-reproduction and replay links, graded against the differential oracle.
+"""Grades a finished campaign against the oracle and writes the bug report.
 
-Grading-time only. This module may import engine.defects and oracle/; the
-agent never sees its output (it runs after the campaign, and writes to
-results/, not to the ledger).
-
-Per episode, per enabled defect:
-  - triggered     leave-one-out replay diverges (oracle/triggers.py) --
-                  the defect changed this trace's outcome
-  - active steps  one-step counterfactuals -- every step it acted on
-  - detected by the invariant checker: a violation of the kind that
-                  defect produces (INVARIANT_SIGNATURES)
-
-Each agent flag is then classified against the defects active in the
-steps the agent could see when it raised the flag:
-  strong  a defect was active in that window, the flag names a character
-          that defect affected, and the flag's wording fits the defect
-  weak    active in the window and the wording fits, no entity overlap
-  unmatched  a defect was active nearby but the wording fits none
-  no defect nearby  nothing was active in the window: likely a false positive
-Only the flag's description is matched, never its evidence (see
-classify_flag). This is a heuristic triage, stated as such in the report:
-it can say a defect was plausibly the subject of a flag, not that the
-flag's claim is right. The manual residue goes through eval/adjudicate.py
-(week 5).
+Per defect: triggered (leave-one-out), active steps, and invariant detection.
+Each agent flag is triaged against defects active in the steps it saw:
+  strong            wording fits and it names an affected character
+  weak              wording fits, no character overlap
+  unmatched         a defect was active nearby but the wording fits none
+  no defect nearby  likely a false positive
+This is a heuristic: it says what a flag is plausibly about, not that it's right.
 """
-from __future__ import annotations
 
 import json
 import os
@@ -145,9 +127,7 @@ def _keywords_match(defect_id: str, text: str) -> bool:
 
 
 def classify_flag(flag: dict, grade: EpisodeGrade) -> dict:
-    # The description only: a flag filed from take_action's audit carries
-    # the whole audit as evidence, and its unrelated lines ("tooltip ok",
-    # "shield pool 14->6") would otherwise match nearly any defect.
+    # Description only: audit evidence would match nearly any defect.
     step = flag["turn"]
     text = flag["description"].lower()
     mentioned = {cid for cid in grade.names if re.search(rf"\b{cid}\b", text)}
@@ -247,10 +227,10 @@ def generate_report(run_dir: str | Path, *, results_root: str | Path = "results"
     w(f"- Build under test: {', '.join(sorted(_enabled_ids(grades)))} enabled")
     w(f"- Episodes: {len(episodes)} ({', '.join(f'{k}x{v}' for k, v in sorted(scen.items()))}); actions: {sum(e['actions_used'] for e in episodes)}")
     if session:
+        w(f"- Method: {session.get('method', 'full_agent')}")
         d = session.get("decisions", {})
         total = sum(d.values()) or 1
-        w(f"- Decisions: LLM {d.get('llm', 0)} ({100 * d.get('llm', 0) / total:.0f}%), scripted {d.get('scripted', 0)}, "
-          f"fallback {d.get('fallback', 0)}")
+        w("- Decisions: " + ", ".join(f"{k} {v} ({100 * v / total:.0f}%)" for k, v in d.items()))
         w(f"- LLM calls: planner {session.get('planner_calls')}, tactical {session.get('inner_calls')}; "
           f"failed after retries: {session.get('failed_calls')}; planner fallbacks: {session.get('planner_fallbacks')}")
         rate = session.get("cache_hit_rate")

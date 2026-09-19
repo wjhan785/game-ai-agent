@@ -1,23 +1,10 @@
-"""The outer (per-episode) planning loop, and the session driver around it.
+"""The planner (outer loop) and the campaign driver.
 
-At every episode boundary the planner gets the ledger digest -- coverage
-gaps, open and resolved hypotheses, recent flags, what the last episode
-did -- and works through tools: `ledger_write` to review the hypotheses
-the last episode tested and to open new ones, `ledger_read` for detail,
-and finally `reset_episode` with a scenario, seed, a concrete goal for the
-tactical agent, the focus characters, and the hypotheses under test. After
-the last episode, one review-only phase closes out open hypotheses and
-ends with `end_session`.
-
-The planner's system prompt (rules + scenario catalog + instructions) is
-fixed for the whole session, so it is a cacheable prefix; the digest is
-the volatile tail.
-
-A planning phase that fails to produce a valid plan within its call budget
-falls back to the least-explored allowed scenario with no goal, and says
-so in the episode summary -- a reported metric, not a crash.
+Before each episode the planner reads the ledger digest, updates
+hypotheses, and calls reset_episode with a scenario, seed, goal and focus
+characters. A final review closes open hypotheses. If planning fails, the
+least-explored scenario is used with no goal (reported, not fatal).
 """
-from __future__ import annotations
 
 import itertools
 import json
@@ -72,11 +59,8 @@ Use ledger_read only for detail the digest leaves out."""
 
 
 def reachable_status_pairs(state: BattleState) -> set[tuple[str, str]]:
-    """Pairs of status types that can ever be held by the same character in
-    this battle, from each ability's declared target type: an enemy-
-    targeted ability can land on any opponent, an ally-targeted one on any
-    teammate, a self-targeted one on its user. Combinatorics over rosters
-    is exactly the bookkeeping a model gets wrong, so it is computed."""
+    """Status pairs one character could ever hold together, from each
+    ability's declared targeting."""
     landable: dict[str, set[str]] = {cid: set() for cid in state.characters}
     for user in state.characters.values():
         for ability in user.abilities:
@@ -228,9 +212,7 @@ def planning_phase(
 
     out = PlanResult()
     for call_index in range(max_calls):
-        # The last call offers only the terminal tool: a phase can still
-        # fail (a malformed or invalid final plan) but can't run out of
-        # calls while still reading and writing.
+        # The last call offers only the terminal tool.
         names = [terminal] if call_index == max_calls - 1 else tool_names
         result = call_with_tools(
             role="outer", messages=messages, tools=build_tool_schemas(names),
@@ -293,6 +275,7 @@ class SessionConfig(BaseModel):
     max_planner_calls: int = MAX_PLANNER_CALLS
     final_review: bool = True
     method: str = "full_agent"
+    planner: bool = True  # False = Greedy-LLM: no planner, no ledger readback
 
 
 def _episode_summary(result: EpisodeResult, ledger: Ledger, episode_id: int, plan: PlanResult) -> dict:
@@ -330,28 +313,43 @@ def run_session(
     spend: Optional[SpendTracker] = None,
     allow_peak: bool = False,
     progress: Callable[[str], None] = print,
+    resume: bool = False,
 ) -> dict:
+    """Runs a campaign. `resume` continues an existing run up to `config.episodes`."""
     run_dir = Path(runs_root) / config.run_name
     ledger_path = run_dir / "ledger.db"
-    if ledger_path.exists():
+    if ledger_path.exists() and not resume:
         raise FileExistsError(f"{ledger_path} already exists -- pick a new run name rather than mixing runs")
+    if resume and not ledger_path.exists():
+        raise FileNotFoundError(f"nothing to resume at {ledger_path}")
+    session_path = run_dir / "session.json"
+    prev = json.loads(session_path.read_text(encoding="utf-8")) if resume and session_path.exists() else {}
     ledger = Ledger(ledger_path)
     system_prompt = planner_system_prompt(build_scenario_catalog(defects, config.allowed_scenarios))
     reachable = scenario_reachability(defects, config.allowed_scenarios)
 
-    totals = {"planner_calls": 0, "inner_calls": 0, "failed_calls": 0, "planner_fallbacks": 0}
-    usage = UsageStats()
-    decisions = {"llm": 0, "scripted": 0, "fallback": 0}
+    # Totals carry over from the previous segment when resuming.
+    totals = {k: prev.get(k, 0) for k in ("planner_calls", "inner_calls", "failed_calls", "planner_fallbacks")}
+    usage = UsageStats(
+        prompt_tokens=prev.get("tokens_in", 0), completion_tokens=prev.get("tokens_out", 0),
+        cache_hit_tokens=prev.get("cache_hit_tokens", 0),
+        cache_miss_tokens=prev.get("tokens_in", 0) - prev.get("cache_hit_tokens", 0),
+        cost_usd=prev.get("cost_usd", 0.0),
+    )
+    decisions = {m: prev.get("decisions", {}).get(m, 0) for m in ("llm", "scripted", "fallback")}
     aborted: Optional[str] = None
     final_summary: Optional[str] = None
     common = dict(mode=mode, cassette=cassette, spend=spend, allow_peak=allow_peak)
 
     try:
-        for _ in range(config.episodes):
-            plan = planning_phase(
-                ledger, system_prompt, allowed_scenarios=config.allowed_scenarios, reachable=reachable,
-                max_calls=config.max_planner_calls, **common,
-            )
+        for _ in range(config.episodes - len(ledger.episodes())):
+            if config.planner:
+                plan = planning_phase(
+                    ledger, system_prompt, allowed_scenarios=config.allowed_scenarios, reachable=reachable,
+                    max_calls=config.max_planner_calls, **common,
+                )
+            else:
+                plan = PlanResult(plan=_fallback_plan(ledger, config.allowed_scenarios))
             totals["planner_calls"] += plan.llm_calls
             totals["failed_calls"] += plan.failed_calls
             totals["planner_fallbacks"] += int(plan.fallback)
@@ -370,6 +368,7 @@ def run_session(
                     scenario_id=p["scenario_id"], seed=p["seed"], turn_cap=config.turn_cap, goal=p["goal"],
                     focus_actor_ids=p["focus_actor_ids"], hypothesis_ids=p["hypothesis_ids"],
                     gating=config.gating, max_decisions=config.max_decisions_per_episode, window=config.window,
+                    memory=config.planner,
                 ),
                 defects=defects, ledger=ledger, episode_id=ep_id, run_dir=run_dir, **common,
             )
@@ -399,7 +398,7 @@ def run_session(
                 aborted = result.aborted_reason
                 break
 
-        if config.final_review and aborted is None:
+        if config.final_review and config.planner and aborted is None:
             review = planning_phase(
                 ledger, system_prompt, allowed_scenarios=config.allowed_scenarios, reachable=reachable,
                 review_only=True, max_calls=config.max_planner_calls, **common,

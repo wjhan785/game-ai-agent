@@ -1,19 +1,6 @@
-"""Per-defect trigger detection for traces recorded against a build with
-several defects enabled at once.
-
-oracle/attribute.py answers "which single flag reproduces this trace",
-which only works when one flag produced it. A campaign runs against the
-whole buggy build, so here each defect is tested by leave-one-out: replay
-the recorded actions under the same build minus that one flag. Because
-every other defect is still present, the two trajectories agree until the
-first moment that defect's branch changes something -- so a divergence
-means the defect changed the outcome of THIS trace, and its position is
-the first time it did.
-
-This is the "trigger" half of the trigger-vs-detection split: identical
-procedure for every method, decided by the oracle alone.
-"""
-from __future__ import annotations
+"""Which defects a full-build trace triggered. Leave-one-out: replay under
+the build minus one flag; a divergence means that defect changed this trace,
+first at the divergence step."""
 
 import re
 from typing import Optional
@@ -84,29 +71,11 @@ def leave_one_out_triggers(
 
 # --- Per-step activity --------------------------------------------------------
 #
-# Leave-one-out gives the FIRST step a defect bit. Grading a flag raised at
-# step s needs more: was the defect active anywhere the agent was looking?
-# Every TurnRecord's `before` snapshot is the complete dynamic state at the
-# top of its turn-slot -- including each character's action_value, since
-# the turn scheduler is itself part of dynamic state now that turn order
-# is speed-driven rather than fixed -- so the exact state before any step
-# can be rebuilt from the log alone, and that one step re-run under the
-# build and under the build minus one defect. A difference means the
-# defect acted on that very step, whatever happened before it.
-# `_state_before` asserts the restored scheduler picks the actor the log
-# actually recorded; on a mismatch (which should not happen off a clean
-# reproduction -- see leave_one_out_triggers's own self-check) the step is
-# reported in `inconsistent_steps` rather than silently simulating the
-# wrong character.
-#
-# Two defects are decided at battle construction, not inside a step, so
-# neither has a one-step counterfactual:
-#  - B08 (enemy_no_basic_fallback) is active on exactly the steps where a
-#    living, unstunned character had no legal action at all -- impossible
-#    in a clean build, where every character keeps its fallback.
-#  - B11 (tie_break_by_character_id) is active on exactly the steps where
-#    the actual actor differs from the spec-correct selection for the
-#    action_values `_state_before` restored -- see its activity rule below.
+# Every step where a defect acted, not just the first. Each record's `before`
+# snapshot rebuilds the exact pre-step state; re-run that one step with and
+# without the defect. Construction-time defects use their own rules instead:
+#  - B08: a living, unstunned character had no legal action.
+#  - B11: the actual actor differs from the clean tie-break's pick.
 
 CONSTRUCTION_TIME_DEFECTS = {"B08", "B11"}
 
@@ -114,19 +83,11 @@ CONSTRUCTION_TIME_DEFECTS = {"B08", "B11"}
 class StepActivity(BaseModel):
     steps: dict[str, list[int]]  # defect id -> steps where it acted
     entities: dict[str, dict[int, list[str]]]  # defect id -> step -> characters affected
-    inconsistent_steps: list[int]  # steps the build itself didn't reproduce from the log
+    inconsistent_steps: list[int]  # steps the build couldn't reproduce from the log
 
 
 class SchedulerReconstructionError(Exception):
-    """`_state_before` restored every character's action_value from the
-    log, but the scheduler it rebuilt would pick a different actor than
-    the log recorded. Under the fixed turn order this couldn't happen --
-    `current_actor_id()` was derived FROM `record.actor_id`, not from
-    independently restored state, so it never had a chance to disagree.
-    With action_value in play the actor is derived, not assumed, so this
-    is a real (if narrow) failure mode: raised only if a caller ignores
-    stepwise_activity's own inconsistent_steps bookkeeping, which is where
-    this should normally be caught and reported instead of raised."""
+    """The rebuilt scheduler would pick a different actor than the log."""
 
 
 def _state_before(initial_state: BattleState, record: TurnRecord) -> BattleState:
@@ -142,10 +103,7 @@ def _state_before(initial_state: BattleState, record: TurnRecord) -> BattleState
     state.elapsed_av = record.elapsed_av
     state.finished = False
     state.outcome = None
-    # The scheduler is derived from the restored action_values, not from
-    # record.actor_id -- the whole point of restoring action_value at all
-    # is so a wrong reconstruction is CAUGHT here, rather than silently
-    # simulating the wrong character (see SchedulerReconstructionError).
+    # Derive the actor from restored state so a bad rebuild is caught.
     if state.current_actor_id() != record.actor_id:
         raise SchedulerReconstructionError(
             f"restored state selects {state.current_actor_id()!r} but the log recorded "
@@ -155,10 +113,8 @@ def _state_before(initial_state: BattleState, record: TurnRecord) -> BattleState
 
 
 def simulate_step(state_before: BattleState, action: Optional[Action], defects: DefectFlags) -> TurnRecord:
-    """One turn-slot, mirroring BattleEngine's own sequencing. When the
-    candidate build would need a decision the log never made, or would
-    reject the logged action, that is recorded in `skipped_reason` -- it is
-    itself an outcome difference."""
+    """One turn-slot, as BattleEngine runs it. A decision the log never made,
+    or a rejected action, shows up in `skipped_reason`."""
     state = state_before.model_copy(deep=True)
     rec = resolution.resolve_pre(state, defects)
     resolution.check_battle_end(state)
@@ -211,11 +167,7 @@ def stepwise_activity(
     entities: dict[str, dict[int, list[str]]] = {did: {} for did, _ in enabled}
     inconsistent: list[int] = []
 
-    # B11's activity check needs "who the CLEAN tie-break would have
-    # picked", independent of any one step -- computed once, not per
-    # record. turn_order construction depends only on the tie-break flag,
-    # so flipping it alone (leave-one-out, same as every other defect
-    # here) is enough; the other nine flags never affect it.
+    # The clean tie-break order, for B11's activity rule.
     clean_turn_order: Optional[list[str]] = None
     if "B11" in steps:
         clean_build = build.model_copy(update={"tie_break_by_character_id": False})

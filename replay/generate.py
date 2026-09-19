@@ -1,20 +1,5 @@
-"""Episode JSONL -> static HTML replay.
-
-This is the primary debugging tool for everything built on top of the
-engine: reading raw JSONL by eye does not scale past a couple of turns,
-and it is also the most demo-able artifact in the repo, so it is built in
-Week 2 rather than last. It renders every turn -- actor, action (or why
-the turn-slot was skipped), the precomputed damage/status/energy diff,
-per-character HP/energy/status bars after the turn, and any invariant
-violations -- against a legend of each character's declared abilities
-(base_power, element, cost, cooldown) pulled from the header's
-`initial_state`, so a reader can check a turn's observed numbers against
-the ability's own declared tooltip by eye.
-
-Templated with Jinja2 (already in the `learning` conda env) rather than
-string concatenation -- see replay/templates/episode.html.jinja.
-"""
-from __future__ import annotations
+"""Episode JSONL -> static HTML replay (Jinja2 template in replay/templates/).
+Shows every turn's diff, bars and violations next to the declared abilities."""
 
 from pathlib import Path
 from typing import Any, Optional

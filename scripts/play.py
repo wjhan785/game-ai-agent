@@ -1,15 +1,14 @@
-"""Play one battle by hand, turn by turn, through the same surface the LLM
-agent uses -- agent.tools.ToolDispatcher's get_state / list_legal_actions /
-take_action -- so what you see here (the state, the legal options, the
-declared-vs-observed diff after each action) is exactly what the agent
-sees, not a separate debug view.
+"""Play a battle by hand through the agent's own tool surface.
 
 Usage:
     conda run -n learning python scripts/play.py S1
     conda run -n learning python scripts/play.py S5 --defects B08
     conda run -n learning python scripts/play.py S2 --full-build --seed 7
+    conda run -n learning python scripts/play.py S1 --manual-enemy
+
+You play the party and the enemy AI plays the enemy. --enemy-sample makes
+it less predictable; --manual-enemy lets you play both teams.
 """
-from __future__ import annotations
 
 import argparse
 import json
@@ -83,6 +82,34 @@ def choose_action(dispatcher: ToolDispatcher) -> dict | None:
         print("Not a valid choice, try again.")
 
 
+def load_enemy_ai(path: str):
+    """(model, generator), or (None, None) with a note if it can't load."""
+    try:
+        import torch
+
+        from enemy_ai.policy import load_checkpoint
+    except ImportError:
+        print("Enemy AI needs torch (pip install -e \".[rl]\"); you'll control both teams.")
+        return None, None
+    if not Path(path).exists():
+        print(f"No enemy AI at {path} (train one: python -m enemy_ai train); you'll control both teams.")
+        return None, None
+    return load_checkpoint(path), torch.Generator().manual_seed(0)
+
+
+def enemy_ai_action(model, engine: BattleEngine, greedy: bool, generator) -> dict:
+    """The enemy AI's move, as take_action kwargs."""
+    from enemy_ai.policy import choose_action
+
+    action = choose_action(model, engine, greedy=greedy, generator=generator)
+    return {
+        "actor_id": action.actor_id,
+        "ability_name": action.ability_name,
+        "target_id": action.target_id,
+        "reasoning": "enemy_ai",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scenario_id", choices=sorted(SCENARIOS))
@@ -90,7 +117,15 @@ def main() -> None:
     parser.add_argument("--turn-cap", type=int, default=20)
     parser.add_argument("--defects", nargs="*", default=[], choices=sorted(ALL_DEFECT_IDS), metavar="B01..B11")
     parser.add_argument("--full-build", action="store_true", help="enable every seeded defect at once")
+    parser.add_argument("--manual-enemy", action="store_true", help="control the enemy team yourself")
+    parser.add_argument("--enemy-ai", default=str(ROOT / "enemy_ai" / "enemy_policy.pt"), metavar="CHECKPOINT",
+                        help="enemy AI checkpoint (default: enemy_ai/enemy_policy.pt)")
+    parser.add_argument("--enemy-sample", action="store_true", help="enemy AI samples moves instead of always the top one")
     args = parser.parse_args()
+
+    model = generator = None
+    if not args.manual_enemy:
+        model, generator = load_enemy_ai(args.enemy_ai)
 
     defects = build_defects(args.defects, args.full_build)
     engine = BattleEngine(args.scenario_id, args.seed, defects, args.turn_cap)
@@ -98,12 +133,20 @@ def main() -> None:
 
     print(f"Scenario {args.scenario_id}, seed {args.seed}, turn cap {args.turn_cap}")
     print(f"Defects enabled: {', '.join(defects.enabled()) or 'none (clean build)'}")
+    if model is not None:
+        print(f"Enemy team: enemy AI ({'sampling' if args.enemy_sample else 'top move'})")
 
     while not engine.state.finished:
         print_state(dispatcher)
-        choice = choose_action(dispatcher)
-        if choice is None:
-            break
+        actor_id = engine.state.current_actor_id()
+        if model is not None and engine.state.characters[actor_id].team == "enemy":
+            choice = enemy_ai_action(model, engine, not args.enemy_sample, generator)
+            target = f" -> {choice['target_id']}" if choice["target_id"] else ""
+            print(f"\n{actor_id} (enemy AI) uses {choice['ability_name']}{target}")
+        else:
+            choice = choose_action(dispatcher)
+            if choice is None:
+                break
         print(json.dumps(dispatcher.take_action(**choice), indent=2))
 
     print(f"\nBattle finished: {engine.state.outcome}")

@@ -1,6 +1,5 @@
 """agent/prompts.py: the rules spec covers every mechanic, and observations
 report declared vs observed numbers faithfully."""
-from __future__ import annotations
 
 from engine.engine import BattleEngine
 from engine.models import Action, StatusType
@@ -96,7 +95,7 @@ def test_recent_events_mark_and_include_everything_new():
         eng.take_action(eng.legal_actions()[0])
     events = recent_events(eng.log, eng.state, window=2, audit_from=3)
     steps = [ev["step"] for ev in events]
-    assert steps == list(range(3, eng.log[-1].step_count + 1))  # widened past the window to cover all new ones
+    assert steps == list(range(3, eng.log[-1].step_count + 1))  # widened to cover all new slots
     assert all(ev.get("new") for ev in events)
     older = recent_events(eng.log, eng.state, window=6, audit_from=9)
     assert [ev.get("new", False) for ev in older] == [ev["step"] >= 9 for ev in older]

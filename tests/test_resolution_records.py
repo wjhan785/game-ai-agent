@@ -1,7 +1,6 @@
 """TurnRecord bookkeeping, as opposed to game state: the record is what the
 agent's tool surface reports, so a wrong record field is a false-positive
 generator even when the underlying state is correct."""
-from __future__ import annotations
 
 from engine.engine import BattleEngine
 from engine.models import Action
@@ -20,10 +19,7 @@ def test_disadvantaged_hit_on_unshielded_target_records_no_absorption():
 
 
 def test_shielded_hit_records_exactly_the_pool_consumed(shield_test_scenario):
-    # p1 Warden shields itself (Aegis Ward, 30 pool), then e1's Basic
-    # Attack (fire 8 power vs neutral Warden, x1.0) is fully absorbed. A
-    # dedicated 1v1 scenario: no other character exists to spend a filler
-    # turn against p1's shield before this test's own explicit hit.
+    # Warden shields (30 pool), then e1's Basic Attack (8, x1.0) is fully absorbed.
     eng = BattleEngine(shield_test_scenario, seed=0)
     eng.take_action(Action(actor_id="p1", ability_name="Aegis Ward", target_id="p1"))
     rec = eng.take_action(Action(actor_id="e1", ability_name="Basic Attack", target_id="p1"))

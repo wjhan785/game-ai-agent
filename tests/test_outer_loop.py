@@ -1,9 +1,5 @@
-"""agent/outer_loop.py, offline. Planning phases replay hand-built cassette
-entries keyed on the real request construction; sessions run against an
-empty cassette, where every model call falls back -- which exercises the
-whole session flow (planning -> episode -> ledger -> logs -> review) for
-free and deterministically."""
-from __future__ import annotations
+"""agent/outer_loop.py offline. Empty cassettes make every call fall back,
+which runs the whole session flow for free."""
 
 import json
 
@@ -187,3 +183,16 @@ def test_session_aborts_cleanly_on_spend_cap(tmp_path, monkeypatch):
     assert summary["episodes_completed"] == 0
     assert json.loads((tmp_path / "t" / "session.json").read_text())["aborted_reason"] == summary["aborted_reason"]
     assert spend.total_usd == 0.0
+
+
+def test_resume_continues_the_same_run(tmp_path):
+    kwargs = dict(runs_root=tmp_path, mode="replay", cassette=Cassette(dir_path=tmp_path / "empty"), progress=lambda _: None)
+    first = run_session(SessionConfig(run_name="t", episodes=1, turn_cap=2, allowed_scenarios=["S1", "S2"]), **kwargs)
+    summary = run_session(
+        SessionConfig(run_name="t", episodes=3, turn_cap=2, allowed_scenarios=["S1", "S2"]), resume=True, **kwargs
+    )
+    assert summary["episodes_completed"] == 3
+    assert summary["planner_fallbacks"] == first["planner_fallbacks"] + 2
+    assert sum(summary["decisions"].values()) == summary["actions"]
+    with pytest.raises(FileNotFoundError):
+        run_session(SessionConfig(run_name="nope", episodes=1), resume=True, **kwargs)

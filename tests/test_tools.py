@@ -1,9 +1,4 @@
-"""Tests for the inner-loop tool surface (agent/tools.py) -- all offline,
-no LLM calls. Drives a real BattleEngine through the dispatcher exactly
-as agent/inner_loop.py will, and checks the diff `take_action` returns
-matches what the engine actually did.
-"""
-from __future__ import annotations
+"""agent/tools.py offline: the take_action diff matches what the engine did."""
 
 import json
 from pathlib import Path
@@ -127,14 +122,7 @@ def test_take_action_returns_diff_matching_engine_record():
 
 
 def test_take_action_exposes_declared_vs_observed_damage_for_double_multiplier_defect():
-    # B09: elemental multiplier applied twice. Cinderfang (fire) has
-    # Flame Lash into whichever enemy/ally is ice, if reachable in S1 --
-    # this scenario has no Ice target, so instead assert the mechanism
-    # directly: declared_expected_damage uses the SAME formula regardless
-    # of the defect (it is the engine's declared data, not a defect-aware
-    # recomputation), so a doubled observed_damage under B09 would show up
-    # as observed > declared -- exactly the comparison the agent is meant
-    # to make.
+    # Declared damage ignores defects, so B09 would show as observed > declared.
     d = _dispatcher(defects=DefectFlags(elemental_multiplier_applied_twice=True))
     actor_id = d.engine.state.current_actor_id()
     options = d.list_legal_actions()["options"]

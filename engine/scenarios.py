@@ -1,14 +1,5 @@
-"""The six hand-built scenarios from docs/scenario-matrix.md.
-
-Each builder returns a fresh set of Character instances for one
-(scenario_id, seed) pair. Seeding perturbs starting HP and energy by a
-bounded percentage so repeated exploration runs see some variety without
-an open-ended world -- see `_perturb`.
-
-All six scenarios are 3v3 so every method's action budget means the same
-thing everywhere (see the budget section of the project plan).
-"""
-from __future__ import annotations
+"""The six 3v3 scenarios from docs/scenario-matrix.md. The seed perturbs
+starting HP and energy within small bounds."""
 
 import random
 from typing import Callable
@@ -24,7 +15,6 @@ from engine.content import (
     GLACIAL_SPIKE,
     MENDING_LIGHT,
     OVERTUNED_BOLT,
-    RALLYING_CRY,
     REVIVE,
     SHOCK_COIL,
     TOXIC_STRIKE,
@@ -129,11 +119,9 @@ def build_s4_attrition(seed: int, defects: DefectFlags) -> tuple[list[Character]
 
 
 def build_s5_lockdown(seed: int, defects: DefectFlags) -> tuple[list[Character], list[str]]:
-    """Turn-skip x cooldown: frequent low-cooldown party actors against
-    Lightning stun-lock enemies with tight cooldowns. Also the B08
-    showcase: `Overtuned` has one wildly unaffordable ability and,
-    when defects.enemy_no_basic_fallback is set, no Basic Attack to
-    fall back on -- it should get permanently stuck."""
+    """Turn-skip x cooldown: stun-lock enemies with tight cooldowns.
+    `Overtuned` can't afford its only ability; without Basic Attack (B08)
+    it gets stuck."""
     party = [
         make_character("p1", "Quickblade", "party", Element.FIRE, 90, 90, 22, [EMBER_SLASH, VOLT_LANCE], speed=160),
         make_character("p2", "Duelist", "party", Element.ICE, 88, 90, 22, [GLACIAL_SPIKE], speed=125),
@@ -197,18 +185,11 @@ def build_battle_state(
         raise ValueError(f"unknown scenario_id {scenario_id!r}, expected one of {list(SCENARIOS)}")
     characters, turn_order = SCENARIOS[scenario_id](seed, defects)
 
-    # Defect B11 (tie_break_by_character_id): ties for the next turn are
-    # meant to be broken by this declared order (see BattleState.
-    # current_actor_id) -- the buggy build sorts ids instead of using the
-    # scenario's own interleave. `current_actor_id` itself stays pure and
-    # defect-free; every seeded defect that touches the schedule is
-    # decided here, once, at construction.
+    # Ties break by this declared order. B11 sorts by id instead.
     if defects.tie_break_by_character_id:
         turn_order = sorted(turn_order)
 
-    # Every character's first turn is one personal cycle away; the clock
-    # starts at the fastest character's cycle length, so battle time 0 is
-    # "nobody has acted yet" rather than "everybody already has".
+    # First turns are one personal cycle away; the clock starts at the earliest.
     for c in characters:
         c.action_value = BASE_ACTION_VALUE / c.speed
     opening_av = min(c.action_value for c in characters)
