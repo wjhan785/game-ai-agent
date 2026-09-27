@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 # game-ai-agent
 
 A headless turn-based tactics combat engine with 11 deliberately seeded
