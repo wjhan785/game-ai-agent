@@ -1,6 +1,6 @@
 [English](README.md) | 简体中文
 
-# game-ai-agent
+# 游戏 AI Agent：自动化缺陷发现
 
 一个无界面的回合制战术战斗引擎，其中刻意预埋了 11 个缺陷，供一个 LLM
 Agent 来搜寻。这个 Agent 会规划下一步测试什么，把记忆保存在上下文窗口之外，
