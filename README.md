@@ -1,6 +1,6 @@
 English | [简体中文](README.zh-CN.md)
 
-# game-ai-agent
+# Game AI Agent for Bug Finding
 
 A headless turn-based tactics combat engine with 11 deliberately seeded
 defects, built to be hunted by an LLM agent that plans what to test next,
